@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "CommonJS",
+    "types": ["jest", "node"], // <-- ESTA ES LA LÍNEA CLAVE
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true
+  }
+}
