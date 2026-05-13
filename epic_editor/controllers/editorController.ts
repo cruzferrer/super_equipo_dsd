@@ -1,363 +1,899 @@
 /**
  * editorController.ts
  * ──────────────────────────────────────────────────────────────────────────
- * Controlador del Editor EPiC Playground.
+ * Controlador principal del Editor EPiC Playground.
  *
- * Responsabilidad:
- *   Orquestar las acciones del Editor. Coordina el estado, la validación,
- *   el adaptador y el cliente del Motor.
+ * Este archivo coordina:
+ *   - estado interno del Editor;
+ *   - acciones de edición;
+ *   - validación del dominio;
+ *   - generación del nuevo MotorInputV2;
+ *   - comunicación con el Motor.
  *
- * Lo que el controlador NO hace (SRP):
- *   - No calcula propagaciones (Motor).
- *   - No renderiza (Visualizador).
- *   - No interpreta el resultado semánticamente (Simulador).
- *   - No implementa lógica de Belnap.
- *   - No duplica matrices de conectivos.
+ * El controlador NO:
+ *   - calcula propagaciones;
+ *   - renderiza;
+ *   - aplica conectivos;
+ *   - interpreta semánticamente el resultado final.
  *
- * Principio DIP:
- *   El controlador depende de IMotorClient, no de MotorApiClient.
- *   En producción se inyecta MotorApiClient; en pruebas, MockMotorClient.
+ * Nuevo modelo:
+ *   variables + ocurrencias + pares + arcos
  *
- * Principio OCP:
- *   Para agregar una nueva operación de edición, se añade un método sin
- *   tocar los existentes. Para cambiar la estrategia de arcos, solo cambia
- *   editorToMotorInput.ts.
- *
- * Estado:
- *   El controlador mantiene un EditorState interno. Expone métodos para
- *   leerlo y suscribirse a cambios (patrón observable mínimo).
- *   En una integración con React, el estado se levantaría a un store
- *   (Zustand, Redux, Context) y el controlador sería un servicio stateless.
+ * Regla central:
+ *   Las evidencias viven en VariableLogica.
+ *   Las ocurrencias solo apuntan a variables mediante variable_id.
  * ──────────────────────────────────────────────────────────────────────────
  */
 
+import { createInitialState, type EditorState, type EditorMode } from "../domain/editorState";
+
 import type {
+  VariableLogica,
+  OcurrenciaVisual,
+  ParVisual,
+  EditorArc,
+  Evidencia,
   BelnapValue,
   MotorConnective,
-  EditorArc,
-  AtributosVisualesElemento,
-  AtributosVisualesConjunto,
-  MotorInput,
+  MotorInputV2,
+  MotorOutput,
   ValidationResult,
-  Posicion,
+  EditorValidationError,
 } from "../domain/editorTypes";
-import { createInitialState } from "../domain/editorState";
-import type { EditorState, EditorMode } from "../domain/editorState";
-import * as actions from "../domain/editorActions";
+
+import {
+  crearVariable,
+  editarVariable,
+  eliminarVariable,
+  agregarEvidenciaAVariable,
+  quitarEvidenciaAVariable,
+  agregarEvidenciaAOcurrencia,
+  quitarEvidenciaAOcurrencia,
+  crearOcurrencia,
+  editarOcurrencia,
+  eliminarOcurrencia,
+  moverOcurrencia,
+  crearPar,
+  editarPar,
+  eliminarPar,
+  agregarOcurrenciaAPar,
+  quitarOcurrenciaDePar,
+  moverPar,
+  crearArco,
+  editarArco,
+  eliminarArco,
+  setModo,
+  setMotorOutput,
+  setConectivosDisponibles,
+  setMaxIteraciones,
+} from "../domain/editorActions";
+
 import { validarEstado } from "../validators/editorValidation";
 import { toMotorInput } from "../adapters/editorToMotorInput";
-import type { IMotorClient } from "../services/motorApiClient";
-import { MotorApiClient } from "../services/motorApiClient";
+import { MockMotorClient, type IMotorClient } from "../services/motorApiClient";
 
 // ─────────────────────────────────────────────
-// Tipos de resultado del controlador
+// Resultado estándar del controlador
 // ─────────────────────────────────────────────
 
-export type ControllerResult<T = void> =
-  | { ok: true; data: T }
-  | { ok: false; errors: ValidationResult["errors"] };
+/**
+ * ControllerResult
+ * ─────────────────────────────────────────────
+ * Resultado estándar para operaciones que pueden fallar por validación.
+ */
+export interface ControllerResult<T = EditorState> {
+  ok: boolean;
+  data?: T;
+  errors?: EditorValidationError[];
+}
 
 // ─────────────────────────────────────────────
-// Clase EditorController
+// Controlador principal
 // ─────────────────────────────────────────────
 
 export class EditorController {
   private state: EditorState;
   private readonly motorClient: IMotorClient;
-  /** Lista de callbacks suscritos a cambios de estado */
-  private readonly subscribers: Array<(state: EditorState) => void> = [];
 
   /**
-   * @param motorClient Cliente del Motor. Por defecto: MotorApiClient real.
-   *                    En pruebas, inyectar MockMotorClient.
+   * Crea una instancia del EditorController.
+   *
+   * Si no se proporciona cliente del Motor, se usa MockMotorClient.
+   * Esto facilita pruebas y desarrollo sin tener el Motor real levantado.
    */
-  constructor(motorClient?: IMotorClient) {
-    this.state = createInitialState();
-    this.motorClient = motorClient ?? new MotorApiClient();
+  constructor(options?: {
+    initialState?: EditorState;
+    motorClient?: IMotorClient;
+  }) {
+    this.state = options?.initialState ?? createInitialState();
+    this.motorClient = options?.motorClient ?? new MockMotorClient();
   }
 
   // ─────────────────────────────────────────────
-  // Suscripción a cambios (para integración con UI)
+  // Lectura de estado
   // ─────────────────────────────────────────────
 
-  /** Suscribirse a cambios de estado del Editor */
-  subscribe(cb: (state: EditorState) => void): () => void {
-    this.subscribers.push(cb);
-    return () => {
-      const idx = this.subscribers.indexOf(cb);
-      if (idx >= 0) this.subscribers.splice(idx, 1);
-    };
-  }
-
-  /** Retorna una copia inmutable del estado actual */
-  getState(): Readonly<EditorState> {
+  /**
+   * Devuelve una referencia del estado actual.
+   *
+   * Si se desea evitar mutaciones externas, se puede cambiar después
+   * por una copia profunda.
+   */
+  getState(): EditorState {
     return this.state;
   }
 
-  private setState(newState: EditorState): void {
-    this.state = newState;
-    this.subscribers.forEach((cb) => cb(this.state));
+  /**
+   * Reemplaza el estado completo del Editor.
+   * Útil para cargar proyectos guardados o restaurar snapshots.
+   */
+  setState(state: EditorState): void {
+    this.state = state;
+  }
+
+  /**
+   * Reinicia el Editor al estado vacío.
+   */
+  reset(): EditorState {
+    this.state = createInitialState();
+    return this.state;
   }
 
   // ─────────────────────────────────────────────
-  // 1. Operaciones sobre Elementos
+  // Modo / configuración
   // ─────────────────────────────────────────────
 
-  crearElemento(
-    id: string,
-    valor_verdad: BelnapValue = "N",
-    pertenencia: string[] = [],
-    posicion?: Partial<Posicion>,
-  ): ControllerResult {
-    if (this.state.elementos[id]) {
+  setModo(modo: EditorMode): EditorState {
+    this.state = setModo(this.state, modo);
+    return this.state;
+  }
+
+  setMaxIteraciones(maxIteraciones: number): EditorState {
+    this.state = setMaxIteraciones(this.state, maxIteraciones);
+    return this.state;
+  }
+
+  // ─────────────────────────────────────────────
+  // Variables
+  // ─────────────────────────────────────────────
+
+  /**
+   * Crea una variable lógica.
+   *
+   * La variable representa el nombre real del sistema: p, q, r, etc.
+   */
+  crearVariable(variable: {
+    id: string;
+    valor_actual?: BelnapValue;
+    evidencias?: Evidencia[];
+    alias?: string | null;
+  }): ControllerResult {
+    if (this.state.variables[variable.id]) {
       return {
         ok: false,
-        errors: [{
-          field: `elementos[${id}].id`,
-          message: `Ya existe un elemento con id "${id}".`,
-          severity: "error",
-          entityId: id,
-        }],
+        errors: [
+          {
+            field: `variables.${variable.id}`,
+            message: `La variable "${variable.id}" ya existe.`,
+            severity: "error",
+            entityId: variable.id,
+          },
+        ],
       };
     }
-    this.setState(actions.crearElemento(this.state, id, valor_verdad, pertenencia, posicion));
-    return { ok: true, data: undefined };
+
+    this.state = crearVariable(this.state, variable);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
   }
 
-  editarElemento(
-    id: string,
-    cambios: Partial<Omit<import("../domain/editorTypes").ElementoIn, "id">>,
+  editarVariable(
+    variableId: string,
+    cambios: Partial<Omit<VariableLogica, "id">>,
   ): ControllerResult {
-    if (!this.state.elementos[id]) {
-      return { ok: false, errors: [{ field: `elementos`, message: `Elemento "${id}" no encontrado.`, severity: "error", entityId: id }] };
-    }
-    this.setState(actions.editarElemento(this.state, id, cambios));
-    return { ok: true, data: undefined };
-  }
-
-  eliminarElemento(id: string): ControllerResult {
-    this.setState(actions.eliminarElemento(this.state, id));
-    return { ok: true, data: undefined };
-  }
-
-  // ─────────────────────────────────────────────
-  // 2. Operaciones sobre Conjuntos
-  // ─────────────────────────────────────────────
-
-  crearConjunto(
-    id: string,
-    conectivo: MotorConnective = "PROPAGATION",
-    posicion?: Partial<Posicion>,
-  ): ControllerResult {
-    if (this.state.conjuntos[id]) {
+    if (!this.state.variables[variableId]) {
       return {
         ok: false,
-        errors: [{
-          field: `conjuntos[${id}].id`,
-          message: `Ya existe un conjunto con id "${id}".`,
-          severity: "error",
-          entityId: id,
-        }],
+        errors: [
+          {
+            field: `variables.${variableId}`,
+            message: `La variable "${variableId}" no existe.`,
+            severity: "error",
+            entityId: variableId,
+          },
+        ],
       };
     }
-    this.setState(actions.crearConjunto(this.state, id, conectivo, posicion));
-    return { ok: true, data: undefined };
+
+    this.state = editarVariable(this.state, variableId, cambios);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
   }
 
-  editarConjunto(
-    id: string,
-    cambios: Partial<Omit<import("../domain/editorTypes").ConjuntoIn, "id">>,
-  ): ControllerResult {
-    if (!this.state.conjuntos[id]) {
-      return { ok: false, errors: [{ field: `conjuntos`, message: `Conjunto "${id}" no encontrado.`, severity: "error", entityId: id }] };
+  eliminarVariable(variableId: string): ControllerResult {
+    if (!this.state.variables[variableId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `variables.${variableId}`,
+            message: `No se puede eliminar la variable "${variableId}" porque no existe.`,
+            severity: "error",
+            entityId: variableId,
+          },
+        ],
+      };
     }
-    this.setState(actions.editarConjunto(this.state, id, cambios));
-    return { ok: true, data: undefined };
+
+    this.state = eliminarVariable(this.state, variableId);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
   }
 
-  eliminarConjunto(id: string): ControllerResult {
-    this.setState(actions.eliminarConjunto(this.state, id));
-    return { ok: true, data: undefined };
-  }
-
-  // ─────────────────────────────────────────────
-  // 3. Arcos internos
-  // ─────────────────────────────────────────────
-
-  registrarArco(arco: EditorArc): ControllerResult {
-    if (!this.state.elementos[arco.origen]) {
-      return { ok: false, errors: [{ field: `arcos[${arco.id}].origen`, message: `Elemento origen "${arco.origen}" no existe.`, severity: "error", entityId: arco.id }] };
-    }
-    if (!this.state.elementos[arco.destino]) {
-      return { ok: false, errors: [{ field: `arcos[${arco.id}].destino`, message: `Elemento destino "${arco.destino}" no existe.`, severity: "error", entityId: arco.id }] };
-    }
-    this.setState(actions.registrarArco(this.state, arco));
-    return { ok: true, data: undefined };
-  }
-
-  eliminarArco(arcId: string): ControllerResult {
-    this.setState(actions.eliminarArco(this.state, arcId));
-    return { ok: true, data: undefined };
-  }
-
-  // ─────────────────────────────────────────────
-  // 4. Relaciones de pertenencia y subconjuntos
-  // ─────────────────────────────────────────────
-
-  asignarElementoAConjunto(elementoId: string, conjuntoId: string): ControllerResult {
-    this.setState(actions.asignarElementoAConjunto(this.state, elementoId, conjuntoId));
-    return { ok: true, data: undefined };
-  }
-
-  quitarElementoDeConjunto(elementoId: string, conjuntoId: string): ControllerResult {
-    this.setState(actions.quitarElementoDeConjunto(this.state, elementoId, conjuntoId));
-    return { ok: true, data: undefined };
-  }
-
-  definirSubconjunto(padreId: string, subId: string): ControllerResult {
-    this.setState(actions.definirSubconjunto(this.state, padreId, subId));
-    return { ok: true, data: undefined };
-  }
-
-  quitarSubconjunto(padreId: string, subId: string): ControllerResult {
-    this.setState(actions.quitarSubconjunto(this.state, padreId, subId));
-    return { ok: true, data: undefined };
-  }
-
-  // ─────────────────────────────────────────────
-  // 5. Atributos lógicos y visuales
-  // ─────────────────────────────────────────────
-
-  asignarValorVerdad(elementoId: string, valor: BelnapValue): ControllerResult {
-    this.setState(actions.asignarValorVerdad(this.state, elementoId, valor));
-    return { ok: true, data: undefined };
-  }
-
-  asignarConectivo(conjuntoId: string, conectivo: MotorConnective): ControllerResult {
-    this.setState(actions.asignarConectivo(this.state, conjuntoId, conectivo));
-    return { ok: true, data: undefined };
-  }
-
-  definirResultadoDe(conjuntoId: string, alias: string | null): ControllerResult {
-    this.setState(actions.definirResultadoDe(this.state, conjuntoId, alias));
-    return { ok: true, data: undefined };
-  }
-
-  actualizarAtributosElemento(
-    elementoId: string,
-    cambios: Partial<AtributosVisualesElemento>,
+  agregarEvidenciaAVariable(
+    variableId: string,
+    evidencia: Evidencia,
   ): ControllerResult {
-    this.setState(actions.actualizarAtributosVisualesElemento(this.state, elementoId, cambios));
-    return { ok: true, data: undefined };
+    if (!this.state.variables[variableId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `variables.${variableId}.evidencias`,
+            message: `No se puede agregar evidencia porque la variable "${variableId}" no existe.`,
+            severity: "error",
+            entityId: variableId,
+          },
+        ],
+      };
+    }
+
+    this.state = agregarEvidenciaAVariable(this.state, variableId, evidencia);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
   }
 
-  actualizarAtributosConjunto(
-    conjuntoId: string,
-    cambios: Partial<AtributosVisualesConjunto>,
+  quitarEvidenciaAVariable(
+    variableId: string,
+    evidencia: Evidencia,
   ): ControllerResult {
-    this.setState(actions.actualizarAtributosVisualesConjunto(this.state, conjuntoId, cambios));
-    return { ok: true, data: undefined };
-  }
+    if (!this.state.variables[variableId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `variables.${variableId}.evidencias`,
+            message: `No se puede quitar evidencia porque la variable "${variableId}" no existe.`,
+            severity: "error",
+            entityId: variableId,
+          },
+        ],
+      };
+    }
 
-  setMaxIteraciones(max: number): ControllerResult {
-    this.setState(actions.setMaxIteraciones(this.state, max));
-    return { ok: true, data: undefined };
+    this.state = quitarEvidenciaAVariable(this.state, variableId, evidencia);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
   }
 
   // ─────────────────────────────────────────────
-  // 6. Validación y generación de MotorInput
+  // Ocurrencias
   // ─────────────────────────────────────────────
 
-  /** Valida el estado actual sin intentar ejecutar el Motor */
+  /**
+   * Crea una ocurrencia visual.
+   *
+   * Una ocurrencia es una aparición de una variable en un par/caja.
+   */
+  crearOcurrencia(ocurrencia: OcurrenciaVisual): ControllerResult {
+    if (this.state.ocurrencias[ocurrencia.id]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `ocurrencias.${ocurrencia.id}`,
+            message: `La ocurrencia "${ocurrencia.id}" ya existe.`,
+            severity: "error",
+            entityId: ocurrencia.id,
+          },
+        ],
+      };
+    }
+
+    if (!this.state.variables[ocurrencia.variable_id]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `ocurrencias.${ocurrencia.id}.variable_id`,
+            message: `No se puede crear la ocurrencia porque la variable "${ocurrencia.variable_id}" no existe.`,
+            severity: "error",
+            entityId: ocurrencia.id,
+          },
+        ],
+      };
+    }
+
+    if (!this.state.pares[ocurrencia.par_id]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `ocurrencias.${ocurrencia.id}.par_id`,
+            message: `No se puede crear la ocurrencia porque el par "${ocurrencia.par_id}" no existe.`,
+            severity: "error",
+            entityId: ocurrencia.id,
+          },
+        ],
+      };
+    }
+
+    this.state = crearOcurrencia(this.state, ocurrencia);
+    this.state = agregarOcurrenciaAPar(
+      this.state,
+      ocurrencia.par_id,
+      ocurrencia.id,
+    );
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  editarOcurrencia(
+    ocurrenciaId: string,
+    cambios: Partial<Omit<OcurrenciaVisual, "id">>,
+  ): ControllerResult {
+    if (!this.state.ocurrencias[ocurrenciaId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `ocurrencias.${ocurrenciaId}`,
+            message: `La ocurrencia "${ocurrenciaId}" no existe.`,
+            severity: "error",
+            entityId: ocurrenciaId,
+          },
+        ],
+      };
+    }
+
+    this.state = editarOcurrencia(this.state, ocurrenciaId, cambios);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  eliminarOcurrencia(ocurrenciaId: string): ControllerResult {
+    if (!this.state.ocurrencias[ocurrenciaId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `ocurrencias.${ocurrenciaId}`,
+            message: `No se puede eliminar la ocurrencia "${ocurrenciaId}" porque no existe.`,
+            severity: "error",
+            entityId: ocurrenciaId,
+          },
+        ],
+      };
+    }
+
+    this.state = eliminarOcurrencia(this.state, ocurrenciaId);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  moverOcurrencia(
+    ocurrenciaId: string,
+    posicion: { x: number; y: number },
+  ): ControllerResult {
+    if (!this.state.ocurrencias[ocurrenciaId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `ocurrencias.${ocurrenciaId}.atributos_visuales`,
+            message: `No se puede mover la ocurrencia "${ocurrenciaId}" porque no existe.`,
+            severity: "error",
+            entityId: ocurrenciaId,
+          },
+        ],
+      };
+    }
+
+    this.state = moverOcurrencia(this.state, ocurrenciaId, posicion);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  /**
+   * Agrega una evidencia usando una ocurrencia visual.
+   *
+   * Esta función implementa la regla principal:
+   * si el usuario pone una bolita sobre una ocurrencia de p,
+   * el cambio se guarda en la variable lógica p.
+   */
+  agregarEvidenciaAOcurrencia(
+    ocurrenciaId: string,
+    evidencia: Evidencia,
+  ): ControllerResult {
+    if (!this.state.ocurrencias[ocurrenciaId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `ocurrencias.${ocurrenciaId}`,
+            message: `No se puede agregar evidencia porque la ocurrencia "${ocurrenciaId}" no existe.`,
+            severity: "error",
+            entityId: ocurrenciaId,
+          },
+        ],
+      };
+    }
+
+    this.state = agregarEvidenciaAOcurrencia(this.state, ocurrenciaId, evidencia);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  quitarEvidenciaAOcurrencia(
+    ocurrenciaId: string,
+    evidencia: Evidencia,
+  ): ControllerResult {
+    if (!this.state.ocurrencias[ocurrenciaId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `ocurrencias.${ocurrenciaId}`,
+            message: `No se puede quitar evidencia porque la ocurrencia "${ocurrenciaId}" no existe.`,
+            severity: "error",
+            entityId: ocurrenciaId,
+          },
+        ],
+      };
+    }
+
+    this.state = quitarEvidenciaAOcurrencia(this.state, ocurrenciaId, evidencia);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // Pares
+  // ─────────────────────────────────────────────
+
+  crearPar(par: ParVisual): ControllerResult {
+    if (this.state.pares[par.id]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `pares.${par.id}`,
+            message: `El par "${par.id}" ya existe.`,
+            severity: "error",
+            entityId: par.id,
+          },
+        ],
+      };
+    }
+
+    this.state = crearPar(this.state, par);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  editarPar(
+    parId: string,
+    cambios: Partial<Omit<ParVisual, "id">>,
+  ): ControllerResult {
+    if (!this.state.pares[parId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `pares.${parId}`,
+            message: `El par "${parId}" no existe.`,
+            severity: "error",
+            entityId: parId,
+          },
+        ],
+      };
+    }
+
+    this.state = editarPar(this.state, parId, cambios);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  eliminarPar(parId: string): ControllerResult {
+    if (!this.state.pares[parId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `pares.${parId}`,
+            message: `No se puede eliminar el par "${parId}" porque no existe.`,
+            severity: "error",
+            entityId: parId,
+          },
+        ],
+      };
+    }
+
+    this.state = eliminarPar(this.state, parId);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  moverPar(parId: string, posicion: { x: number; y: number }): ControllerResult {
+    if (!this.state.pares[parId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `pares.${parId}.atributos_visuales`,
+            message: `No se puede mover el par "${parId}" porque no existe.`,
+            severity: "error",
+            entityId: parId,
+          },
+        ],
+      };
+    }
+
+    this.state = moverPar(this.state, parId, posicion);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  agregarOcurrenciaAPar(
+    parId: string,
+    ocurrenciaId: string,
+  ): ControllerResult {
+    if (!this.state.pares[parId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `pares.${parId}`,
+            message: `El par "${parId}" no existe.`,
+            severity: "error",
+            entityId: parId,
+          },
+        ],
+      };
+    }
+
+    if (!this.state.ocurrencias[ocurrenciaId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `ocurrencias.${ocurrenciaId}`,
+            message: `La ocurrencia "${ocurrenciaId}" no existe.`,
+            severity: "error",
+            entityId: ocurrenciaId,
+          },
+        ],
+      };
+    }
+
+    this.state = agregarOcurrenciaAPar(this.state, parId, ocurrenciaId);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  quitarOcurrenciaDePar(
+    parId: string,
+    ocurrenciaId: string,
+  ): ControllerResult {
+    if (!this.state.pares[parId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `pares.${parId}`,
+            message: `El par "${parId}" no existe.`,
+            severity: "error",
+            entityId: parId,
+          },
+        ],
+      };
+    }
+
+    this.state = quitarOcurrenciaDePar(this.state, parId, ocurrenciaId);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // Arcos
+  // ─────────────────────────────────────────────
+
+  crearArco(arco: EditorArc): ControllerResult {
+    if (this.state.arcos[arco.id]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `arcos.${arco.id}`,
+            message: `El arco "${arco.id}" ya existe.`,
+            severity: "error",
+            entityId: arco.id,
+          },
+        ],
+      };
+    }
+
+    const origen = this.state.ocurrencias[arco.origen_ocurrencia];
+    const destino = this.state.ocurrencias[arco.destino_ocurrencia];
+
+    if (!origen) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `arcos.${arco.id}.origen_ocurrencia`,
+            message: `La ocurrencia origen "${arco.origen_ocurrencia}" no existe.`,
+            severity: "error",
+            entityId: arco.id,
+          },
+        ],
+      };
+    }
+
+    if (!destino) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `arcos.${arco.id}.destino_ocurrencia`,
+            message: `La ocurrencia destino "${arco.destino_ocurrencia}" no existe.`,
+            severity: "error",
+            entityId: arco.id,
+          },
+        ],
+      };
+    }
+
+    if (arco.origen_variable !== origen.variable_id) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `arcos.${arco.id}.origen_variable`,
+            message: `origen_variable debe coincidir con la variable de ${arco.origen_ocurrencia}.`,
+            severity: "error",
+            entityId: arco.id,
+          },
+        ],
+      };
+    }
+
+    if (arco.destino_variable !== destino.variable_id) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `arcos.${arco.id}.destino_variable`,
+            message: `destino_variable debe coincidir con la variable de ${arco.destino_ocurrencia}.`,
+            severity: "error",
+            entityId: arco.id,
+          },
+        ],
+      };
+    }
+
+    this.state = crearArco(this.state, arco);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  editarArco(
+    arcoId: string,
+    cambios: Partial<Omit<EditorArc, "id">>,
+  ): ControllerResult {
+    if (!this.state.arcos[arcoId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `arcos.${arcoId}`,
+            message: `El arco "${arcoId}" no existe.`,
+            severity: "error",
+            entityId: arcoId,
+          },
+        ],
+      };
+    }
+
+    this.state = editarArco(this.state, arcoId, cambios);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  eliminarArco(arcoId: string): ControllerResult {
+    if (!this.state.arcos[arcoId]) {
+      return {
+        ok: false,
+        errors: [
+          {
+            field: `arcos.${arcoId}`,
+            message: `No se puede eliminar el arco "${arcoId}" porque no existe.`,
+            severity: "error",
+            entityId: arcoId,
+          },
+        ],
+      };
+    }
+
+    this.state = eliminarArco(this.state, arcoId);
+
+    return {
+      ok: true,
+      data: this.state,
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // Validación / salida hacia Motor
+  // ─────────────────────────────────────────────
+
   validar(): ValidationResult {
     return validarEstado(this.state);
   }
 
   /**
-   * Genera el MotorInput a partir del estado actual.
-   * Retorna error si la validación falla.
+   * Genera el nuevo JSON completo que se enviará al Motor.
    */
-  generarMotorInput(): ControllerResult<MotorInput> {
+  generarMotorInput(): ControllerResult<MotorInputV2> {
     const validation = validarEstado(this.state);
+
     if (!validation.valid) {
-      return { ok: false, errors: validation.errors };
+      return {
+        ok: false,
+        errors: validation.errors,
+      };
     }
-    const payload = toMotorInput(this.state);
-    return { ok: true, data: payload };
+
+    return {
+      ok: true,
+      data: toMotorInput(this.state),
+    };
   }
 
   // ─────────────────────────────────────────────
-  // 7. Comunicación con el Motor
+  // Comunicación con Motor
   // ─────────────────────────────────────────────
 
-  /**
-   * Verifica que el Motor esté activo (GET /health).
-   */
-  async checkMotorHealth(): Promise<boolean> {
+  async healthMotor(): Promise<boolean> {
     return this.motorClient.health();
   }
 
-  /**
-   * Carga los conectivos disponibles desde el Motor (GET /conectivos).
-   * Actualiza el estado interno del Editor con la lista real.
-   * Si el Motor no está disponible, mantiene el fallback estático.
-   */
-  async cargarConectivos(): Promise<void> {
+  async cargarConectivos(): Promise<ControllerResult> {
     try {
-      const conectivos = await this.motorClient.getConectivos();
-      this.setState(actions.setConectivosDisponibles(this.state, conectivos));
-    } catch {
-      // Silencioso: el Editor ya tiene un fallback estático en KNOWN_CONNECTIVES
-    }
-  }
+      const conectivos = await this.motorClient.listarConectivos();
+      this.state = setConectivosDisponibles(this.state, conectivos);
 
-  /**
-   * Ejecuta el flujo completo:
-   *   1. Valida el estado.
-   *   2. Genera MotorInput.
-   *   3. Cambia a modo "ejecucion".
-   *   4. Envía a POST /calcular.
-   *   5. Almacena el MotorOutput en el estado.
-   *   6. Retorna el resultado para que el Simulador lo consuma.
-   *
-   * Si la validación falla, NO envía al Motor y retorna errores.
-   * Si el Motor falla, restaura el modo "edicion".
-   */
-  async ejecutar(): Promise<ControllerResult<import("../domain/editorTypes").MotorOutput>> {
-    // ── Validar ──
-    const validation = validarEstado(this.state);
-    if (!validation.valid) {
-      return { ok: false, errors: validation.errors };
-    }
-
-    // ── Generar payload ──
-    const payload = toMotorInput(this.state);
-
-    // ── Cambiar a modo ejecución ──
-    this.setState(actions.setModo(this.state, "ejecucion"));
-
-    try {
-      // ── Enviar al Motor ──
-      const output = await this.motorClient.calcular(payload);
-
-      // ── Almacenar resultado ──
-      this.setState(actions.setMotorOutput(this.state, output));
-
-      return { ok: true, data: output };
-    } catch (err) {
-      // ── Restaurar modo edición si el Motor falla ──
-      this.setState(actions.setModo(this.state, "edicion"));
-      const msg = err instanceof Error ? err.message : "Error desconocido al contactar el Motor.";
+      return {
+        ok: true,
+        data: this.state,
+      };
+    } catch (error) {
       return {
         ok: false,
-        errors: [{ field: "motor", message: msg, severity: "error" }],
+        errors: [
+          {
+            field: "conectivosDisponibles",
+            message:
+              error instanceof Error
+                ? error.message
+                : "No se pudieron cargar los conectivos.",
+            severity: "error",
+          },
+        ],
       };
     }
   }
 
-  /** Vuelve al modo edición desde modo ejecución */
-  volverAEdicion(): void {
-    this.setState(actions.setModo(this.state, "edicion"));
-    this.setState(actions.setMotorOutput(this.state, null));
+  /**
+   * Valida, genera MotorInputV2 y lo envía al Motor.
+   */
+  async ejecutar(): Promise<ControllerResult<MotorOutput>> {
+    const validation = validarEstado(this.state);
+
+    if (!validation.valid) {
+      return {
+        ok: false,
+        errors: validation.errors,
+      };
+    }
+
+    const previousMode = this.state.modo;
+
+    try {
+      this.state = setModo(this.state, "ejecucion");
+
+      const payload = toMotorInput(this.state);
+      const output = await this.motorClient.calcular(payload);
+
+      this.state = setMotorOutput(this.state, output);
+
+      return {
+        ok: true,
+        data: output,
+      };
+    } catch (error) {
+      this.state = setModo(this.state, previousMode);
+
+      return {
+        ok: false,
+        errors: [
+          {
+            field: "motor",
+            message:
+              error instanceof Error
+                ? error.message
+                : "Error desconocido al ejecutar el Motor.",
+            severity: "error",
+          },
+        ],
+      };
+    }
   }
 }

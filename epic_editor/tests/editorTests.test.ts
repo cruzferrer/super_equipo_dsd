@@ -1,463 +1,724 @@
 /**
  * editorTests.test.ts
  * ──────────────────────────────────────────────────────────────────────────
- * Suite de pruebas del Editor EPiC Playground.
+ * Pruebas del módulo Editor EPiC Playground.
  *
- * Cubre los 20 casos definidos en el prompt, más casos adicionales.
+ * Estas pruebas validan el nuevo modelo:
  *
- * Organización:
- *   1. Validaciones del EditorState
- *   2. Acciones del Editor
- *   3. Adaptador EditorState → MotorInput
- *   4. Comunicación con el Motor (usando MockMotorClient)
- *   5. Flujo completo de edición → ejecución
+ *   variables + ocurrencias + pares + arcos
  *
- * Tecnología: describe/it estilo Jest/Vitest (compatible con ambos).
- * Para ejecutar: npx vitest run  o  npx jest
- * ──────────────────────────────────────────────────────────────────────────
+ * Regla central:
+ *   Una variable lógica puede aparecer muchas veces visualmente.
+ *   Todas sus ocurrencias comparten valor_actual y evidencias.
+ *
+ * Ejemplo:
+ *   occ_1.variable_id = "p"
+ *   occ_3.variable_id = "p"
+ *
+ *   Ambas representan a la misma variable lógica "p".
  */
 
+import { describe, it, expect } from "@jest/globals";
+
 import { createInitialState } from "../domain/editorState";
-import * as actions from "../domain/editorActions";
-import { validarEstado } from "../validators/editorValidation";
+
+import {
+  evidenciasToBelnap,
+  type VariableLogica,
+  type OcurrenciaVisual,
+  type ParVisual,
+  type EditorArc,
+} from "../domain/editorTypes";
+
+import {
+  crearVariable,
+  crearOcurrencia,
+  crearPar,
+  crearArco,
+  agregarEvidenciaAOcurrencia,
+  agregarEvidenciaAVariable,
+  quitarEvidenciaAVariable,
+  eliminarVariable,
+  eliminarOcurrencia,
+  eliminarPar,
+  moverOcurrencia,
+  moverPar,
+} from "../domain/editorActions";
+
+import {
+  validarEstado,
+  esBelnapValido,
+  esEvidenciaValida,
+  esConectivoValido,
+} from "../validators/editorValidation";
+
 import { toMotorInput } from "../adapters/editorToMotorInput";
-import { EditorController } from "../controllers/editorController";
-import { MockMotorClient, MotorApiError } from "../services/motorApiClient";
-import type { EditorState } from "../domain/editorState";
-import type { MotorOutput } from "../domain/editorTypes";
+
+import {
+  EditorController,
+} from "../controllers/editorController";
+
+import {
+  MockMotorClient,
+} from "../services/motorApiClient";
 
 // ─────────────────────────────────────────────
-// Helpers de prueba
+// Helpers
 // ─────────────────────────────────────────────
 
-/** Crea un estado con un elemento en un conjunto */
-function estadoBase(): EditorState {
-  let s = createInitialState();
-  s = actions.crearConjunto(s, "C1", "PROPAGATION", { x: 120, y: 200 });
-  s = actions.crearElemento(s, "e1", "V", ["C1"], { x: 120, y: 200 });
-  return s;
+function variable(id: string): VariableLogica {
+  return {
+    id,
+    valor_actual: "N",
+    evidencias: [],
+    alias: null,
+  };
 }
 
-/** Crea un estado con dos elementos en el mismo conjunto */
-function estadoDosElementos(
-  val1 = "V",
-  val2 = "N",
-  conectivo = "KJOIN",
-): EditorState {
-  let s = createInitialState();
-  s = actions.crearConjunto(s, "C1", conectivo as any);
-  s = actions.crearElemento(s, "e1", val1 as any, ["C1"]);
-  s = actions.crearElemento(s, "e2", val2 as any, ["C1"]);
-  return s;
+function par(id: string): ParVisual {
+  return {
+    id,
+    ocurrencias: [],
+    atributos_visuales: {
+      x: 100,
+      y: 100,
+    },
+  };
+}
+
+function ocurrencia(
+  id: string,
+  variable_id: string,
+  par_id: string,
+  x = 0,
+  y = 0,
+): OcurrenciaVisual {
+  return {
+    id,
+    variable_id,
+    par_id,
+    atributos_visuales: {
+      x,
+      y,
+    },
+  };
+}
+
+function arco(
+  id: string,
+  origen_ocurrencia: string,
+  destino_ocurrencia: string,
+  origen_variable: string,
+  destino_variable: string,
+): EditorArc {
+  return {
+    id,
+    origen_ocurrencia,
+    destino_ocurrencia,
+    origen_variable,
+    destino_variable,
+    conectivo: "IMPLIES",
+  };
+}
+
+function crearEstadoBasico() {
+  let state = createInitialState();
+
+  state = crearVariable(state, variable("p"));
+  state = crearVariable(state, variable("q"));
+
+  state = crearPar(state, par("par_1"));
+
+  state = crearOcurrencia(
+    state,
+    ocurrencia("occ_1", "p", "par_1", 100, 160),
+  );
+
+  state = crearOcurrencia(
+    state,
+    ocurrencia("occ_2", "q", "par_1", 260, 160),
+  );
+
+  state = {
+    ...state,
+    pares: {
+      ...state.pares,
+      par_1: {
+        ...state.pares.par_1,
+        ocurrencias: ["occ_1", "occ_2"],
+      },
+    },
+  };
+
+  state = crearArco(
+    state,
+    arco("a1", "occ_1", "occ_2", "p", "q"),
+  );
+
+  return state;
 }
 
 // ─────────────────────────────────────────────
-// 1. Validaciones del EditorState
+// Utilidades de dominio
+// ─────────────────────────────────────────────
+
+describe("Utilidades de dominio", () => {
+  it("evidencias vacías producen N", () => {
+    expect(evidenciasToBelnap([])).toBe("N");
+  });
+
+  it("evidencia verde produce V", () => {
+    expect(evidenciasToBelnap(["verde"])).toBe("V");
+  });
+
+  it("evidencia roja produce F", () => {
+    expect(evidenciasToBelnap(["roja"])).toBe("F");
+  });
+
+  it("evidencia verde y roja produce B", () => {
+    expect(evidenciasToBelnap(["verde", "roja"])).toBe("B");
+  });
+
+  it("valida valores Belnap permitidos", () => {
+    expect(esBelnapValido("V")).toBe(true);
+    expect(esBelnapValido("F")).toBe(true);
+    expect(esBelnapValido("N")).toBe(true);
+    expect(esBelnapValido("B")).toBe(true);
+    expect(esBelnapValido("TRUE")).toBe(false);
+  });
+
+  it("valida evidencias permitidas", () => {
+    expect(esEvidenciaValida("verde")).toBe(true);
+    expect(esEvidenciaValida("roja")).toBe(true);
+    expect(esEvidenciaValida("azul")).toBe(false);
+  });
+
+  it("valida conectivos permitidos", () => {
+    expect(esConectivoValido("IMPLIES")).toBe(true);
+    expect(esConectivoValido("KJOIN")).toBe(true);
+    expect(esConectivoValido("XOR_CUANTICO")).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────
+// Acciones sobre variables
+// ─────────────────────────────────────────────
+
+describe("Acciones sobre variables", () => {
+  it("crearVariable agrega una variable lógica al estado", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+
+    expect(state.variables.p).toBeDefined();
+    expect(state.variables.p.id).toBe("p");
+    expect(state.variables.p.valor_actual).toBe("N");
+  });
+
+  it("agregarEvidenciaAVariable actualiza evidencias y valor_actual", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+    state = agregarEvidenciaAVariable(state, "p", "verde");
+
+    expect(state.variables.p.evidencias).toEqual(["verde"]);
+    expect(state.variables.p.valor_actual).toBe("V");
+  });
+
+  it("agregar evidencia roja a variable con verde produce B", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+    state = agregarEvidenciaAVariable(state, "p", "verde");
+    state = agregarEvidenciaAVariable(state, "p", "roja");
+
+    expect(state.variables.p.evidencias).toEqual(["verde", "roja"]);
+    expect(state.variables.p.valor_actual).toBe("B");
+  });
+
+  it("quitarEvidenciaAVariable recalcula valor_actual", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, {
+      id: "p",
+      evidencias: ["verde", "roja"],
+    });
+
+    state = quitarEvidenciaAVariable(state, "p", "roja");
+
+    expect(state.variables.p.evidencias).toEqual(["verde"]);
+    expect(state.variables.p.valor_actual).toBe("V");
+  });
+
+  it("eliminarVariable elimina sus ocurrencias y arcos relacionados", () => {
+    let state = crearEstadoBasico();
+
+    state = eliminarVariable(state, "p");
+
+    expect(state.variables.p).toBeUndefined();
+    expect(state.ocurrencias.occ_1).toBeUndefined();
+    expect(state.arcos.a1).toBeUndefined();
+    expect(state.pares.par_1.ocurrencias).toEqual(["occ_2"]);
+  });
+});
+
+// ─────────────────────────────────────────────
+// Ocurrencias y sincronización de bolitas
+// ─────────────────────────────────────────────
+
+describe("Ocurrencias visuales y sincronización", () => {
+  it("crearOcurrencia agrega una aparición visual de una variable", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+    state = crearPar(state, par("par_1"));
+    state = crearOcurrencia(state, ocurrencia("occ_1", "p", "par_1"));
+
+    expect(state.ocurrencias.occ_1).toBeDefined();
+    expect(state.ocurrencias.occ_1.variable_id).toBe("p");
+  });
+
+  it("dos ocurrencias pueden apuntar a la misma variable lógica", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+    state = crearPar(state, par("par_1"));
+    state = crearPar(state, par("par_2"));
+
+    state = crearOcurrencia(state, ocurrencia("occ_1", "p", "par_1"));
+    state = crearOcurrencia(state, ocurrencia("occ_2", "p", "par_2"));
+
+    expect(state.ocurrencias.occ_1.variable_id).toBe("p");
+    expect(state.ocurrencias.occ_2.variable_id).toBe("p");
+  });
+
+  it("poner evidencia en una ocurrencia actualiza la variable lógica", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+    state = crearPar(state, par("par_1"));
+    state = crearOcurrencia(state, ocurrencia("occ_1", "p", "par_1"));
+
+    state = agregarEvidenciaAOcurrencia(state, "occ_1", "verde");
+
+    expect(state.variables.p.evidencias).toEqual(["verde"]);
+    expect(state.variables.p.valor_actual).toBe("V");
+  });
+
+  it("si dos ocurrencias apuntan a p, ambas comparten el valor de p", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+    state = crearPar(state, par("par_1"));
+    state = crearPar(state, par("par_2"));
+
+    state = crearOcurrencia(state, ocurrencia("occ_1", "p", "par_1"));
+    state = crearOcurrencia(state, ocurrencia("occ_2", "p", "par_2"));
+
+    state = agregarEvidenciaAOcurrencia(state, "occ_1", "verde");
+
+    expect(state.ocurrencias.occ_1.variable_id).toBe("p");
+    expect(state.ocurrencias.occ_2.variable_id).toBe("p");
+    expect(state.variables.p.valor_actual).toBe("V");
+    expect(state.variables.p.evidencias).toEqual(["verde"]);
+  });
+
+  it("moverOcurrencia actualiza sus coordenadas", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+    state = crearPar(state, par("par_1"));
+    state = crearOcurrencia(state, ocurrencia("occ_1", "p", "par_1", 10, 20));
+
+    state = moverOcurrencia(state, "occ_1", { x: 300, y: 400 });
+
+    expect(state.ocurrencias.occ_1.atributos_visuales).toEqual({
+      x: 300,
+      y: 400,
+    });
+  });
+
+  it("eliminarOcurrencia la quita del par y elimina arcos relacionados", () => {
+    let state = crearEstadoBasico();
+
+    state = eliminarOcurrencia(state, "occ_1");
+
+    expect(state.ocurrencias.occ_1).toBeUndefined();
+    expect(state.pares.par_1.ocurrencias).toEqual(["occ_2"]);
+    expect(state.arcos.a1).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────
+// Pares
+// ─────────────────────────────────────────────
+
+describe("Pares visuales", () => {
+  it("crearPar agrega una caja/par al estado", () => {
+    let state = createInitialState();
+
+    state = crearPar(state, par("par_1"));
+
+    expect(state.pares.par_1).toBeDefined();
+    expect(state.pares.par_1.ocurrencias).toEqual([]);
+  });
+
+  it("moverPar actualiza coordenadas del par", () => {
+    let state = createInitialState();
+
+    state = crearPar(state, par("par_1"));
+    state = moverPar(state, "par_1", { x: 500, y: 600 });
+
+    expect(state.pares.par_1.atributos_visuales).toEqual({
+      x: 500,
+      y: 600,
+    });
+  });
+
+  it("eliminarPar elimina sus ocurrencias y arcos relacionados", () => {
+    let state = crearEstadoBasico();
+
+    state = eliminarPar(state, "par_1");
+
+    expect(state.pares.par_1).toBeUndefined();
+    expect(state.ocurrencias.occ_1).toBeUndefined();
+    expect(state.ocurrencias.occ_2).toBeUndefined();
+    expect(state.arcos.a1).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────
+// Validaciones
 // ─────────────────────────────────────────────
 
 describe("Validaciones del Editor", () => {
+  it("estado básico válido no produce errores graves", () => {
+    const state = crearEstadoBasico();
 
-  // Caso 11: Error cuando un elemento pertenece a un conjunto inexistente
-  it("11 — error si pertenencia apunta a conjunto inexistente", () => {
-    let s = createInitialState();
-    s = actions.crearElemento(s, "e1", "V", ["C99"]);
-    const result = validarEstado(s);
-    expect(result.valid).toBe(false);
-    expect(result.errors.some((e) => e.field.includes("pertenencia"))).toBe(true);
-    expect(result.errors.some((e) => e.message.includes("C99"))).toBe(true);
-  });
+    const result = validarEstado(state);
 
-  // Caso 12: Error cuando un conjunto referencia un subconjunto inexistente
-  it("12 — error si subconjunto no existe", () => {
-    let s = createInitialState();
-    s = actions.crearConjunto(s, "C1", "PROPAGATION");
-    s = actions.definirSubconjunto(s, "C1", "C_FANTASMA");
-    const result = validarEstado(s);
-    expect(result.valid).toBe(false);
-    expect(result.errors.some((e) => e.message.includes("C_FANTASMA"))).toBe(true);
-  });
-
-  // Caso 13: Error cuando hay ciclo entre subconjuntos
-  it("13 — error si existe ciclo en subconjuntos", () => {
-    let s = createInitialState();
-    s = actions.crearConjunto(s, "C1", "PROPAGATION");
-    s = actions.crearConjunto(s, "C2", "PROPAGATION");
-    // Forzar ciclo directo: C1→C2 y C2→C1
-    s = actions.definirSubconjunto(s, "C1", "C2");
-    s = actions.definirSubconjunto(s, "C2", "C1");
-    const result = validarEstado(s);
-    expect(result.valid).toBe(false);
-    expect(result.errors.some((e) => e.message.toLowerCase().includes("ciclo"))).toBe(true);
-  });
-
-  // Caso 14: Error cuando el conectivo no existe
-  it("14 — error si conectivo no reconocido", () => {
-    let s = createInitialState();
-    // Forzar un conectivo inválido directamente en el estado
-    s = actions.crearConjunto(s, "C1", "PROPAGATION");
-    s = { ...s, conjuntos: { ...s.conjuntos, C1: { ...s.conjuntos.C1!, conectivo: "XOR_CUANTICO" as any } } };
-    const result = validarEstado(s);
-    expect(result.valid).toBe(false);
-    expect(result.errors.some((e) => e.message.includes("XOR_CUANTICO"))).toBe(true);
-  });
-
-  // Caso 15: Error cuando se repite un ID (detección a nivel de controlador)
-  it("15 — error si se intenta crear elemento con ID duplicado", () => {
-    const ctrl = new EditorController(new MockMotorClient());
-    ctrl.crearConjunto("C1");
-    ctrl.crearElemento("e1", "V", ["C1"]);
-    const result = ctrl.crearElemento("e1", "F", ["C1"]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.errors.some((e) => e.message.includes("e1"))).toBe(true);
-    }
-  });
-
-  // Caso 16: Error si arco tiene origen o destino inexistente
-  it("16 — error si arco interno apunta a elemento inexistente", () => {
-    let s = createInitialState();
-    s = actions.crearElemento(s, "p", "V", []);
-    s = actions.registrarArco(s, {
-      id: "a1",
-      origen: "p",
-      destino: "q_INEXISTENTE",
-      conectivo: "IMPLIES",
-      atributos_visuales: {},
-    });
-    const result = validarEstado(s);
-    expect(result.valid).toBe(false);
-    expect(result.errors.some((e) => e.field.includes("destino"))).toBe(true);
-  });
-
-  it("— max_iteraciones fuera de rango genera error", () => {
-    let s = estadoBase();
-    s = actions.setMaxIteraciones(s, 0);
-    const result = validarEstado(s);
-    expect(result.valid).toBe(false);
-  });
-
-  it("— max_iteraciones en rango válido es aceptado", () => {
-    let s = estadoBase();
-    s = actions.setMaxIteraciones(s, 250);
-    const result = validarEstado(s);
     expect(result.valid).toBe(true);
   });
-});
 
-// ─────────────────────────────────────────────
-// 2. Acciones del Editor
-// ─────────────────────────────────────────────
+  it("error si valor_actual no coincide con evidencias", () => {
+    let state = createInitialState();
 
-describe("Acciones del Editor", () => {
-
-  it("— crearElemento añade al estado", () => {
-    const s = estadoBase();
-    expect(s.elementos["e1"]).toBeDefined();
-    expect(s.elementos["e1"]!.valor_verdad).toBe("V");
-  });
-
-  it("— editarElemento actualiza valor_verdad", () => {
-    let s = estadoBase();
-    s = actions.asignarValorVerdad(s, "e1", "F");
-    expect(s.elementos["e1"]!.valor_verdad).toBe("F");
-  });
-
-  it("— eliminarElemento limpia referencias de arcos", () => {
-    let s = createInitialState();
-    s = actions.crearElemento(s, "p", "V", []);
-    s = actions.crearElemento(s, "q", "N", []);
-    s = actions.registrarArco(s, { id: "a1", origen: "p", destino: "q", conectivo: "IMPLIES", atributos_visuales: {} });
-    s = actions.eliminarElemento(s, "p");
-    expect(s.elementos["p"]).toBeUndefined();
-    expect(s.arcos["a1"]).toBeUndefined(); // arco debe eliminarse
-  });
-
-  it("— eliminarConjunto limpia pertenencia en elementos", () => {
-    let s = estadoBase(); // e1 ∈ C1
-    s = actions.eliminarConjunto(s, "C1");
-    expect(s.conjuntos["C1"]).toBeUndefined();
-    expect(s.elementos["e1"]!.pertenencia).not.toContain("C1");
-  });
-
-  it("— definirSubconjunto agrega correctamente", () => {
-    let s = createInitialState();
-    s = actions.crearConjunto(s, "C1", "KJOIN");
-    s = actions.crearConjunto(s, "C2", "PROPAGATION");
-    s = actions.definirSubconjunto(s, "C1", "C2");
-    expect(s.conjuntos["C1"]!.subconjuntos).toContain("C2");
-  });
-
-  it("— quitarSubconjunto lo elimina correctamente", () => {
-    let s = createInitialState();
-    s = actions.crearConjunto(s, "C1", "KJOIN");
-    s = actions.crearConjunto(s, "C2", "PROPAGATION");
-    s = actions.definirSubconjunto(s, "C1", "C2");
-    s = actions.quitarSubconjunto(s, "C1", "C2");
-    expect(s.conjuntos["C1"]!.subconjuntos).not.toContain("C2");
-  });
-
-  it("— setModo cambia el modo correctamente", () => {
-    let s = estadoBase();
-    s = actions.setModo(s, "ejecucion");
-    expect(s.modo).toBe("ejecucion");
-  });
-});
-
-// ─────────────────────────────────────────────
-// 3. Adaptador EditorState → MotorInput
-// ─────────────────────────────────────────────
-
-describe("Adaptador editorToMotorInput", () => {
-
-  // Caso 1: MotorInput con un elemento
-  it("1 — MotorInput con un elemento", () => {
-    const payload = toMotorInput(estadoBase());
-    expect(payload.elementos).toHaveLength(1);
-    expect(payload.elementos[0]!.id).toBe("e1");
-  });
-
-  // Caso 2: MotorInput con dos elementos en el mismo conjunto
-  it("2 — MotorInput con dos elementos en el mismo conjunto", () => {
-    const payload = toMotorInput(estadoDosElementos("V", "N"));
-    expect(payload.elementos).toHaveLength(2);
-    expect(payload.conjuntos).toHaveLength(1);
-    expect(payload.elementos[0]!.pertenencia).toContain("C1");
-    expect(payload.elementos[1]!.pertenencia).toContain("C1");
-  });
-
-  // Casos 3-6: Valores V, F, N, B
-  it("3 — MotorInput con valor V", () => {
-    const p = toMotorInput(estadoBase()); // e1 = "V"
-    expect(p.elementos[0]!.valor_verdad).toBe("V");
-  });
-
-  it("4 — MotorInput con valor F", () => {
-    let s = createInitialState();
-    s = actions.crearConjunto(s, "C1", "PROPAGATION");
-    s = actions.crearElemento(s, "e1", "F", ["C1"]);
-    expect(toMotorInput(s).elementos[0]!.valor_verdad).toBe("F");
-  });
-
-  it("5 — MotorInput con valor N", () => {
-    let s = createInitialState();
-    s = actions.crearConjunto(s, "C1", "PROPAGATION");
-    s = actions.crearElemento(s, "e1", "N", ["C1"]);
-    expect(toMotorInput(s).elementos[0]!.valor_verdad).toBe("N");
-  });
-
-  it("6 — MotorInput con valor B", () => {
-    let s = createInitialState();
-    s = actions.crearConjunto(s, "C1", "PROPAGATION");
-    s = actions.crearElemento(s, "e1", "B", ["C1"]);
-    expect(toMotorInput(s).elementos[0]!.valor_verdad).toBe("B");
-  });
-
-  // Caso 7: KJOIN
-  it("7 — MotorInput con conectivo KJOIN", () => {
-    const p = toMotorInput(estadoDosElementos("V", "F", "KJOIN"));
-    expect(p.conjuntos[0]!.conectivo).toBe("KJOIN");
-  });
-
-  // Caso 8: IMPLIES
-  it("8 — MotorInput con conectivo IMPLIES", () => {
-    let s = createInitialState();
-    s = actions.crearConjunto(s, "C1", "IMPLIES");
-    s = actions.crearElemento(s, "p", "V", ["C1"]);
-    s = actions.crearElemento(s, "q", "N", ["C1"]);
-    const p = toMotorInput(s);
-    expect(p.conjuntos[0]!.conectivo).toBe("IMPLIES");
-  });
-
-  // Caso 9: Subconjuntos
-  it("9 — MotorInput con subconjuntos", () => {
-    let s = createInitialState();
-    s = actions.crearConjunto(s, "C1", "KJOIN");
-    s = actions.crearConjunto(s, "C2", "PROPAGATION");
-    s = actions.definirSubconjunto(s, "C1", "C2");
-    s = actions.crearElemento(s, "e1", "V", ["C2"]);
-    const p = toMotorInput(s);
-    const c1 = p.conjuntos.find((c) => c.id === "C1");
-    expect(c1?.subconjuntos).toContain("C2");
-  });
-
-  // Caso 10: es_resultado_de
-  it("10 — MotorInput con es_resultado_de", () => {
-    let s = createInitialState();
-    s = actions.crearConjunto(s, "C1", "PROPAGATION");
-    s = actions.definirResultadoDe(s, "C1", "Z");
-    s = actions.crearElemento(s, "e1", "V", ["C1"]);
-    const p = toMotorInput(s);
-    const c1 = p.conjuntos.find((c) => c.id === "C1");
-    expect(c1?.es_resultado_de).toBe("Z");
-  });
-
-  // Caso 17: Traducción de arco p → q a MotorInput válido
-  it("17 — arco p→q se traduce a ConjuntoIn implícito en MotorInput", () => {
-    let s = createInitialState();
-    s = actions.crearElemento(s, "p", "V", []);
-    s = actions.crearElemento(s, "q", "N", []);
-    s = actions.registrarArco(s, {
-      id: "a1",
-      origen: "p",
-      destino: "q",
-      conectivo: "IMPLIES",
-      atributos_visuales: { color: "#333" },
+    state = crearVariable(state, {
+      id: "p",
+      valor_actual: "V",
+      evidencias: [],
     });
-    const p = toMotorInput(s);
-    const conjImplicito = p.conjuntos.find((c) => c.id === "arc_p_q");
-    expect(conjImplicito).toBeDefined();
-    expect(conjImplicito?.conectivo).toBe("IMPLIES");
-    // p y q deben pertenecer al conjunto generado
-    const elemP = p.elementos.find((e) => e.id === "p");
-    const elemQ = p.elementos.find((e) => e.id === "q");
-    expect(elemP?.pertenencia).toContain("arc_p_q");
-    expect(elemQ?.pertenencia).toContain("arc_p_q");
+
+    const result = validarEstado(state);
+
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some((error) =>
+        error.field.includes("variables.p.valor_actual"),
+      ),
+    ).toBe(true);
   });
 
-  it("— max_iteraciones se preserva en MotorInput", () => {
-    let s = estadoBase();
-    s = actions.setMaxIteraciones(s, 250);
-    expect(toMotorInput(s).max_iteraciones).toBe(250);
-  });
-});
+  it("error si una ocurrencia apunta a variable inexistente", () => {
+    let state = createInitialState();
 
-// ─────────────────────────────────────────────
-// 4. Comunicación con el Motor (Mock)
-// ─────────────────────────────────────────────
+    state = crearPar(state, par("par_1"));
+    state = crearOcurrencia(state, ocurrencia("occ_1", "p", "par_1"));
 
-describe("Comunicación con el Motor (MockMotorClient)", () => {
+    const result = validarEstado(state);
 
-  // Caso 18: GET /health
-  it("18 — health retorna true cuando el Motor está activo", async () => {
-    const ctrl = new EditorController(new MockMotorClient({ healthOk: true }));
-    expect(await ctrl.checkMotorHealth()).toBe(true);
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some((error) =>
+        error.field.includes("ocurrencias.occ_1.variable_id"),
+      ),
+    ).toBe(true);
   });
 
-  it("18b — health retorna false cuando el Motor no está disponible", async () => {
-    const ctrl = new EditorController(new MockMotorClient({ healthOk: false }));
-    expect(await ctrl.checkMotorHealth()).toBe(false);
+  it("error si una ocurrencia apunta a par inexistente", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+    state = crearOcurrencia(state, ocurrencia("occ_1", "p", "par_inexistente"));
+
+    const result = validarEstado(state);
+
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some((error) =>
+        error.field.includes("ocurrencias.occ_1.par_id"),
+      ),
+    ).toBe(true);
   });
 
-  // Caso 19: GET /conectivos
-  it("19 — cargarConectivos actualiza el estado del Editor", async () => {
-    const mock = new MockMotorClient({
-      conectivos: ["AND", "OR", "KJOIN"],
+  it("error si un par referencia ocurrencia inexistente", () => {
+    let state = createInitialState();
+
+    state = crearPar(state, {
+      id: "par_1",
+      ocurrencias: ["occ_inexistente"],
+      atributos_visuales: { x: 0, y: 0 },
     });
-    const ctrl = new EditorController(mock);
-    await ctrl.cargarConectivos();
-    expect(ctrl.getState().conectivosDisponibles).toEqual(["AND", "OR", "KJOIN"]);
+
+    const result = validarEstado(state);
+
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some((error) =>
+        error.field.includes("pares.par_1.ocurrencias"),
+      ),
+    ).toBe(true);
   });
 
-  // Caso 20: POST /calcular
-  it("20 — ejecutar envía MotorInput y recibe MotorOutput", async () => {
-    const mockOutput: MotorOutput = {
-      elementos: [{ id: "e1", valor_verdad: "V", valor_verdad_inicial: "V", pertenencia: ["C1"], proviene: [], atributos_visuales: { posicion: { x: 120, y: 200 }, color: "verde" } }],
-      conjuntos: [{ id: "C1", subconjuntos: [], es_resultado_de: null, conectivo: "PROPAGATION", atributos_visuales: { radio: 50, forma: "elipse", posicion: { x: 120, y: 200 } } }],
-      acciones: [{ paso: 1, tipo_accion: "estabilizacion", elemento_id: "*", valor_resultante: "*", descripcion: "Estabilizado." }],
-      iteraciones_realizadas: 1,
-      estabilizado: true,
-      resumen: {},
+  it("warning si un par no tiene exactamente dos ocurrencias", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+    state = crearPar(state, par("par_1"));
+    state = crearOcurrencia(state, ocurrencia("occ_1", "p", "par_1"));
+
+    state = {
+      ...state,
+      pares: {
+        ...state.pares,
+        par_1: {
+          ...state.pares.par_1,
+          ocurrencias: ["occ_1"],
+        },
+      },
     };
-    const ctrl = new EditorController(new MockMotorClient({ calcularResponse: mockOutput }));
-    ctrl.crearConjunto("C1");
-    ctrl.crearElemento("e1", "V", ["C1"]);
-    const result = await ctrl.ejecutar();
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.data.estabilizado).toBe(true);
-    }
+
+    const result = validarEstado(state);
+
+    expect(result.valid).toBe(true);
+    expect(
+      result.errors.some((error) => error.severity === "warning"),
+    ).toBe(true);
   });
 
-  it("— ejecutar falla con validación si el estado es inválido", async () => {
-    const ctrl = new EditorController(new MockMotorClient());
-    // e1 pertenece a C99 que no existe
-    ctrl.crearElemento("e1", "V", ["C99"]);
-    const result = await ctrl.ejecutar();
-    expect(result.ok).toBe(false);
-    // Modo debe seguir en "edicion"
-    expect(ctrl.getState().modo).toBe("edicion");
-  });
+  it("error si arco apunta a ocurrencia inexistente", () => {
+    let state = createInitialState();
 
-  it("— ejecutar restaura modo edicion si el Motor devuelve error", async () => {
-    const ctrl = new EditorController(
-      new MockMotorClient({ calcularResponse: new MotorApiError(500, "Error interno") }),
+    state = crearVariable(state, variable("p"));
+    state = crearVariable(state, variable("q"));
+    state = crearPar(state, par("par_1"));
+
+    state = crearArco(
+      state,
+      arco("a1", "occ_inexistente", "occ_2", "p", "q"),
     );
-    ctrl.crearConjunto("C1");
-    ctrl.crearElemento("e1", "V", ["C1"]);
-    const result = await ctrl.ejecutar();
-    expect(result.ok).toBe(false);
-    expect(ctrl.getState().modo).toBe("edicion");
+
+    const result = validarEstado(state);
+
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some((error) =>
+        error.field.includes("arcos.a1.origen_ocurrencia"),
+      ),
+    ).toBe(true);
+  });
+
+  it("error si origen_variable no coincide con variable de origen_ocurrencia", () => {
+    let state = crearEstadoBasico();
+
+    state = {
+      ...state,
+      arcos: {
+        ...state.arcos,
+        a1: {
+          ...state.arcos.a1,
+          origen_variable: "q",
+        },
+      },
+    };
+
+    const result = validarEstado(state);
+
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some((error) =>
+        error.field.includes("arcos.a1.origen_variable"),
+      ),
+    ).toBe(true);
+  });
+
+  it("error si conectivo de arco no es válido", () => {
+    let state = crearEstadoBasico();
+
+    state = {
+      ...state,
+      arcos: {
+        ...state.arcos,
+        a1: {
+          ...state.arcos.a1,
+          conectivo: "XOR_CUANTICO" as never,
+        },
+      },
+    };
+
+    const result = validarEstado(state);
+
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some((error) =>
+        error.field.includes("arcos.a1.conectivo"),
+      ),
+    ).toBe(true);
   });
 });
 
 // ─────────────────────────────────────────────
-// 5. Flujo completo (escenarios del test_motor.py)
+// Adaptador a MotorInputV2
 // ─────────────────────────────────────────────
 
-describe("Flujo completo — escenarios compatibles con test_motor.py", () => {
+describe("Adaptador toMotorInput", () => {
+  it("genera el JSON completo con proyecto, versión y dominio compartido", () => {
+    const state = crearEstadoBasico();
 
-  it("Caso 1 — elemento único en conjunto PROPAGATION genera MotorInput válido", () => {
-    const ctrl = new EditorController();
-    ctrl.crearConjunto("C1", "PROPAGATION", { x: 120, y: 200 });
-    ctrl.crearElemento("e1", "V", ["C1"], { x: 120, y: 200 });
-    const result = ctrl.generarMotorInput();
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.data.elementos[0]!.valor_verdad).toBe("V");
-      expect(result.data.conjuntos[0]!.conectivo).toBe("PROPAGATION");
-    }
+    const payload = toMotorInput(state);
+
+    expect(payload.proyecto).toBe("EPIC Playground PoC");
+    expect(payload.version).toBe("2.0");
+    expect(payload.estado_sistema).toBe("edicion");
+    expect(payload.dominio_valores).toEqual(["V", "F", "N", "B"]);
+
+    expect(payload.dominio_compartido.variables).toHaveLength(2);
+    expect(payload.dominio_compartido.ocurrencias).toHaveLength(2);
+    expect(payload.dominio_compartido.pares).toHaveLength(1);
+    expect(payload.dominio_compartido.arcos).toHaveLength(1);
   });
 
-  it("Caso 2 — propagación simple KJOIN (V + N)", () => {
-    const ctrl = new EditorController();
-    ctrl.crearConjunto("C1", "KJOIN");
-    ctrl.crearElemento("e1", "V", ["C1"], { x: 100, y: 160 });
-    ctrl.crearElemento("e2", "N", ["C1"], { x: 260, y: 160 });
-    const result = ctrl.generarMotorInput();
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.data.elementos).toHaveLength(2);
-    }
+  it("incluye variables con evidencias sincronizadas", () => {
+    let state = crearEstadoBasico();
+
+    state = agregarEvidenciaAOcurrencia(state, "occ_1", "verde");
+
+    const payload = toMotorInput(state);
+    const p = payload.dominio_compartido.variables.find(
+      (item) => item.id === "p",
+    );
+
+    expect(p).toBeDefined();
+    expect(p?.valor_actual).toBe("V");
+    expect(p?.evidencias).toEqual(["verde"]);
   });
 
-  it("Caso 3 — contradicción V/F genera MotorInput válido (Motor calcula B)", () => {
-    const ctrl = new EditorController();
-    ctrl.crearConjunto("C1", "KJOIN");
-    ctrl.crearElemento("e1", "V", ["C1"]);
-    ctrl.crearElemento("e2", "F", ["C1"]);
-    const result = ctrl.generarMotorInput();
-    expect(result.ok).toBe(true);
-    // El Editor solo genera el escenario; el Motor producirá B
-    if (result.ok) {
-      expect(result.data.elementos.map((e) => e.valor_verdad).sort()).toEqual(["F", "V"]);
-    }
+  it("incluye ocurrencias repetidas de la misma variable", () => {
+    let state = createInitialState();
+
+    state = crearVariable(state, variable("p"));
+    state = crearPar(state, par("par_1"));
+    state = crearPar(state, par("par_2"));
+
+    state = crearOcurrencia(state, ocurrencia("occ_1", "p", "par_1"));
+    state = crearOcurrencia(state, ocurrencia("occ_2", "p", "par_2"));
+
+    const payload = toMotorInput(state);
+
+    const ocurrenciasDeP = payload.dominio_compartido.ocurrencias.filter(
+      (item) => item.variable_id === "p",
+    );
+
+    expect(ocurrenciasDeP).toHaveLength(2);
+  });
+});
+
+// ─────────────────────────────────────────────
+// Controlador
+// ─────────────────────────────────────────────
+
+describe("EditorController", () => {
+  it("crearVariable desde controlador evita duplicados", () => {
+    const editor = new EditorController();
+
+    const result1 = editor.crearVariable({ id: "p" });
+    const result2 = editor.crearVariable({ id: "p" });
+
+    expect(result1.ok).toBe(true);
+    expect(result2.ok).toBe(false);
   });
 
-  it("Caso 4 — jerarquía de subconjuntos", () => {
-    const ctrl = new EditorController();
-    ctrl.crearConjunto("C1", "KJOIN");
-    ctrl.crearConjunto("C2", "KJOIN");
-    ctrl.definirSubconjunto("C1", "C2");
-    ctrl.crearElemento("e1", "V", ["C2"]);
-    ctrl.crearElemento("e2", "N", ["C1"]);
-    const result = ctrl.generarMotorInput();
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      const c1 = result.data.conjuntos.find((c) => c.id === "C1");
-      expect(c1?.subconjuntos).toContain("C2");
-    }
+  it("crearOcurrencia desde controlador exige variable existente", () => {
+    const editor = new EditorController();
+
+    editor.crearPar(par("par_1"));
+
+    const result = editor.crearOcurrencia(
+      ocurrencia("occ_1", "p", "par_1"),
+    );
+
+    expect(result.ok).toBe(false);
   });
 
-  it("Caso 5 — cambio de variable (es_resultado_de)", () => {
-    const ctrl = new EditorController();
-    ctrl.crearConjunto("C1", "PROPAGATION");
-    ctrl.definirResultadoDe("C1", "Z");
-    ctrl.crearElemento("e1", "V", ["C1"]);
-    const result = ctrl.generarMotorInput();
+  it("agregarEvidenciaAOcurrencia desde controlador actualiza variable", () => {
+    const editor = new EditorController();
+
+    editor.crearVariable({ id: "p" });
+    editor.crearPar(par("par_1"));
+    editor.crearOcurrencia(ocurrencia("occ_1", "p", "par_1"));
+
+    const result = editor.agregarEvidenciaAOcurrencia("occ_1", "verde");
+
     expect(result.ok).toBe(true);
-    if (result.ok) {
-      const c1 = result.data.conjuntos.find((c) => c.id === "C1");
-      expect(c1?.es_resultado_de).toBe("Z");
-    }
+    expect(editor.getState().variables.p.valor_actual).toBe("V");
+  });
+
+  it("generarMotorInput devuelve MotorInputV2 válido", () => {
+    const editor = new EditorController();
+
+    editor.crearVariable({ id: "p" });
+    editor.crearVariable({ id: "q" });
+    editor.crearPar(par("par_1"));
+    editor.crearOcurrencia(ocurrencia("occ_1", "p", "par_1"));
+    editor.crearOcurrencia(ocurrencia("occ_2", "q", "par_1"));
+    editor.crearArco(arco("a1", "occ_1", "occ_2", "p", "q"));
+
+    const result = editor.generarMotorInput();
+
+    expect(result.ok).toBe(true);
+    expect(result.data?.dominio_compartido.variables).toHaveLength(2);
+  });
+
+  it("ejecutar envía MotorInputV2 al MockMotorClient", async () => {
+    const motorClient = new MockMotorClient();
+    const editor = new EditorController({ motorClient });
+
+    editor.crearVariable({ id: "p" });
+    editor.crearVariable({ id: "q" });
+    editor.crearPar(par("par_1"));
+    editor.crearOcurrencia(ocurrencia("occ_1", "p", "par_1"));
+    editor.crearOcurrencia(ocurrencia("occ_2", "q", "par_1"));
+    editor.crearArco(arco("a1", "occ_1", "occ_2", "p", "q"));
+
+    const result = await editor.ejecutar();
+
+    expect(result.ok).toBe(true);
+    expect(motorClient.receivedPayloads).toHaveLength(1);
+    expect(motorClient.receivedPayloads[0].version).toBe("2.0");
+  });
+
+  it("ejecutar no manda al Motor si el estado es inválido", async () => {
+    const motorClient = new MockMotorClient();
+    const editor = new EditorController({ motorClient });
+
+    editor.crearVariable({ id: "p" });
+    editor.crearPar(par("par_1"));
+
+    /**
+     * Forzamos estado inválido manualmente:
+     * par_1 tiene solo una ocurrencia, pero eso es warning, no error.
+     * Para crear un error real, agregamos arco inexistente directo al estado.
+     */
+    editor.setState({
+      ...editor.getState(),
+      arcos: {
+        a1: arco("a1", "occ_inexistente", "occ_2", "p", "q"),
+      },
+    });
+
+    const result = await editor.ejecutar();
+
+    expect(result.ok).toBe(false);
+    expect(motorClient.receivedPayloads).toHaveLength(0);
   });
 });

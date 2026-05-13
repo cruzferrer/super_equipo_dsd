@@ -1,44 +1,106 @@
 /**
  * index.ts — Punto de entrada público del módulo Editor EPiC Playground.
  *
- * Solo expone lo que otros componentes necesitan conocer.
- * Los detalles internos (acciones, adaptador, validador) NO forman parte
- * de la API pública del Editor hacia el resto del sistema.
+ * Este archivo expone únicamente lo que otros componentes necesitan usar
+ * del Editor.
  *
- * Uso externo esperado:
- *   import { EditorController, MockMotorClient } from "@epic/editor";
- *   const editor = new EditorController();
+ * Nuevo modelo del Editor:
+ *   - variables
+ *   - ocurrencias
+ *   - pares
+ *   - arcos
+ *
+ * El Editor ya no expone ElementoIn / ConjuntoIn como contrato principal,
+ * porque el Motor ahora se adaptará al nuevo JSON de salida:
+ *
+ * {
+ *   proyecto,
+ *   version,
+ *   estado_sistema,
+ *   dominio_valores,
+ *   dominio_compartido: {
+ *     variables,
+ *     ocurrencias,
+ *     pares,
+ *     arcos
+ *   }
+ * }
  */
 
-// Controlador principal (punto de entrada operacional)
+// ─────────────────────────────────────────────
+// Controlador principal
+// ─────────────────────────────────────────────
+
 export { EditorController } from "./controllers/editorController";
 export type { ControllerResult } from "./controllers/editorController";
 
-// Tipos del contrato del Motor (compartidos con otros componentes)
+// ─────────────────────────────────────────────
+// Tipos principales del nuevo contrato
+// ─────────────────────────────────────────────
+
 export type {
   BelnapValue,
+  Evidencia,
   MotorConnective,
-  ElementoIn,
-  ConjuntoIn,
-  MotorInput,
-  MotorOutput,
-  Accion,
+  EstadoSistema,
+  AtributosVisualesBasicos,
+  VariableLogica,
+  OcurrenciaVisual,
+  ParVisual,
   EditorArc,
+  DominioCompartido,
+  MotorInputV2,
+  MotorOutput,
   EditorValidationError,
   ValidationResult,
-  Posicion,
 } from "./domain/editorTypes";
 
-// Estado del Editor (para integración con stores/React)
+// ─────────────────────────────────────────────
+// Constantes y utilidades del dominio
+// ─────────────────────────────────────────────
+
+export {
+  DOMINIO_VALORES,
+  DEFAULT_CONNECTIVE,
+  KNOWN_CONNECTIVES,
+  evidenciasToBelnap,
+} from "./domain/editorTypes";
+
+// ─────────────────────────────────────────────
+// Estado del Editor
+// ─────────────────────────────────────────────
+
 export type { EditorState, EditorMode } from "./domain/editorState";
 export { createInitialState } from "./domain/editorState";
 
-// Cliente Mock (para pruebas de integración de otros componentes)
-export { MockMotorClient, MotorApiClient, MotorApiError } from "./services/motorApiClient";
+// ─────────────────────────────────────────────
+// Cliente del Motor
+// ─────────────────────────────────────────────
+
+export {
+  MockMotorClient,
+  MotorApiClient,
+  MotorApiError,
+} from "./services/motorApiClient";
+
 export type { IMotorClient } from "./services/motorApiClient";
 
-// Adaptador (para uso directo si otro componente necesita el payload sin enviar)
-export { toMotorInput } from "./adapters/editorToMotorInput";
+// ─────────────────────────────────────────────
+// Adaptador hacia el Motor
+// ─────────────────────────────────────────────
 
-// Validador (para validación independiente)
-export { validarEstado, esBelnapValido, esConectivoValido } from "./validators/editorValidation";
+export {
+  toMotorInput,
+  crearDominioCompartido,
+} from "./adapters/editorToMotorInput";
+
+// ─────────────────────────────────────────────
+// Validador
+// ─────────────────────────────────────────────
+
+export {
+  validarEstado,
+  esBelnapValido,
+  esEvidenciaValida,
+  esConectivoValido,
+} from "./validators/editorValidation";

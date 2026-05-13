@@ -1,264 +1,287 @@
 /**
  * motorApiClient.ts
  * ──────────────────────────────────────────────────────────────────────────
- * Cliente HTTP del Motor EPiC Playground.
+ * Cliente HTTP para comunicarse con el Motor EPiC Playground.
  *
- * Responsabilidad ÚNICA (SRP):
- *   Comunicarse con la API REST del Motor. Solo hace HTTP.
- *   No calcula, no valida estado del Editor, no renderiza.
+ * Responsabilidad:
+ *   - Consultar si el Motor está activo.
+ *   - Consultar conectivos disponibles.
+ *   - Enviar el nuevo MotorInputV2 al Motor.
  *
- * Endpoints que consume:
- *   GET  /health      → Verifica que el Motor esté activo.
- *   GET  /conectivos  → Lista los conectivos disponibles.
- *   POST /calcular    → Envía MotorInput y recibe MotorOutput.
+ * Este archivo NO:
+ *   - modifica el estado del Editor;
+ *   - valida el dominio;
+ *   - calcula propagaciones;
+ *   - interpreta semánticamente el resultado;
+ *   - renderiza nada.
  *
- * Manejo de errores:
- *   - Error 422: payload inválido según el Motor (Pydantic validation error).
- *   - Error 500: error interno del Motor.
- *   - Error de red: Motor no disponible.
- *   Todos se convierten en MotorApiError para que el controlador los maneje.
+ * Cambio principal:
+ *   Antes `calcular()` recibía:
  *
- * Principio DIP:
- *   El EditorController depende de IMotorClient (interfaz), no de esta clase.
- *   En pruebas, MockMotorClient implementa la misma interfaz.
- *   Para cambiar la implementación HTTP (ej: WebSocket), se reemplaza esta
- *   clase sin tocar el controlador.
+ *     {
+ *       elementos: [],
+ *       conjuntos: [],
+ *       max_iteraciones: 100
+ *     }
  *
- * Configuración:
- *   La URL base se pasa al constructor. Por defecto: http://localhost:8000.
- *   El Editor nunca hardcodea la URL en la lógica de negocio.
+ *   Ahora recibe MotorInputV2:
+ *
+ *     {
+ *       proyecto,
+ *       version,
+ *       estado_sistema,
+ *       dominio_valores,
+ *       dominio_compartido: {
+ *         variables,
+ *         ocurrencias,
+ *         pares,
+ *         arcos
+ *       }
+ *     }
  * ──────────────────────────────────────────────────────────────────────────
  */
 
-import type { MotorInput, MotorOutput } from "../domain/editorTypes";
+import type {
+  MotorConnective,
+  MotorInputV2,
+  MotorOutput,
+} from "../domain/editorTypes";
 
 // ─────────────────────────────────────────────
-// Error tipado del cliente API
+// Error especializado del cliente del Motor
 // ─────────────────────────────────────────────
 
 /**
- * Error estructurado que el cliente lanza cuando la comunicación con el Motor falla.
- * El controlador puede distinguir por `statusCode` si fue un error del cliente (422)
- * o del servidor (500), o si el Motor no estaba disponible (0).
+ * MotorApiError
+ * ─────────────────────────────────────────────
+ * Error controlado para fallos de comunicación con el Motor.
+ *
+ * Permite distinguir errores HTTP o de red de otros errores internos.
  */
 export class MotorApiError extends Error {
-  constructor(
-    public readonly statusCode: number,
-    public readonly detail: string,
-    public readonly raw?: unknown,
-  ) {
-    super(`MotorApiError [${statusCode}]: ${detail}`);
+  public readonly status?: number;
+  public readonly detail?: unknown;
+
+  constructor(message: string, status?: number, detail?: unknown) {
+    super(message);
     this.name = "MotorApiError";
+    this.status = status;
+    this.detail = detail;
   }
 }
 
 // ─────────────────────────────────────────────
-// Interfaz del cliente (para DIP y testabilidad)
+// Interfaz del cliente
 // ─────────────────────────────────────────────
 
 /**
- * IMotorClient — abstracción del cliente del Motor.
+ * IMotorClient
+ * ─────────────────────────────────────────────
+ * Abstracción del cliente del Motor.
  *
- * El EditorController depende de esta interfaz, no de MotorApiClient.
- * Esto permite sustituir la implementación HTTP por un mock en pruebas
- * sin cambiar una línea del controlador (LSP + DIP).
+ * El EditorController depende de esta interfaz y no de una implementación
+ * concreta. Esto permite usar:
+ *
+ *   - MotorApiClient para integración real;
+ *   - MockMotorClient para pruebas.
  */
 export interface IMotorClient {
-  /** Verifica que el Motor esté activo. Retorna true si responde ok. */
   health(): Promise<boolean>;
-
-  /** Retorna la lista de nombres de conectivos disponibles. */
-  getConectivos(): Promise<string[]>;
-
-  /**
-   * Envía un MotorInput al Motor y retorna el MotorOutput con el estado
-   * estabilizado y las acciones generadas.
-   * Lanza MotorApiError si el Motor responde con error o no está disponible.
-   */
-  calcular(payload: MotorInput): Promise<MotorOutput>;
+  listarConectivos(): Promise<MotorConnective[]>;
+  calcular(payload: MotorInputV2): Promise<MotorOutput>;
 }
 
 // ─────────────────────────────────────────────
-// Implementación HTTP real
+// Cliente HTTP real
 // ─────────────────────────────────────────────
 
 /**
- * MotorApiClient — implementación HTTP del cliente del Motor.
- *
- * Usa fetch (disponible en Node ≥18 y en todos los browsers modernos).
- * Para environments sin fetch nativo, puede inyectarse una alternativa.
+ * MotorApiClient
+ * ─────────────────────────────────────────────
+ * Implementación real vía HTTP usando fetch.
  */
 export class MotorApiClient implements IMotorClient {
   private readonly baseUrl: string;
 
-  /**
-   * @param baseUrl URL base del Motor. Por defecto: http://localhost:8000
-   */
   constructor(baseUrl = "http://localhost:8000") {
-    // Eliminar barra final para consistencia en la construcción de URLs
     this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
-  // ── GET /health ──
-
+  /**
+   * Verifica si el Motor está disponible.
+   *
+   * Espera que el Motor responda correctamente en GET /health.
+   */
   async health(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/health`);
-      if (!res.ok) return false;
-      const data = await res.json();
-      return data?.status === "ok";
+      const response = await fetch(`${this.baseUrl}/health`);
+      return response.ok;
     } catch {
-      // Motor no disponible (error de red)
       return false;
     }
   }
 
-  // ── GET /conectivos ──
+  /**
+   * Obtiene la lista de conectivos disponibles desde el Motor.
+   *
+   * El Motor anterior devolvía un objeto con los conectivos como llaves.
+   * Por eso aquí soportamos esa estructura.
+   */
+  async listarConectivos(): Promise<MotorConnective[]> {
+    const response = await fetch(`${this.baseUrl}/conectivos`);
 
-  async getConectivos(): Promise<string[]> {
-    let res: Response;
-    try {
-      res = await fetch(`${this.baseUrl}/conectivos`);
-    } catch (e) {
-      throw new MotorApiError(0, "No se pudo conectar con el Motor.", e);
-    }
-
-    if (!res.ok) {
-      const body = await this._tryParseBody(res);
-      throw new MotorApiError(res.status, body?.detail ?? "Error al obtener conectivos.", body);
-    }
-
-    // El Motor retorna un objeto { "AND": {...}, "OR": {...}, ... }
-    // El cliente extrae solo las claves (nombres de conectivos)
-    const data = await res.json();
-    return Object.keys(data);
-  }
-
-  // ── POST /calcular ──
-
-  async calcular(payload: MotorInput): Promise<MotorOutput> {
-    let res: Response;
-    try {
-      res = await fetch(`${this.baseUrl}/calcular`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-    } catch (e) {
-      throw new MotorApiError(0, "No se pudo conectar con el Motor.", e);
-    }
-
-    const body = await this._tryParseBody(res);
-
-    if (res.status === 422) {
-      // Pydantic validation error — payload incompatible con schemas.py
+    if (!response.ok) {
       throw new MotorApiError(
-        422,
-        `El payload no es válido para el Motor: ${JSON.stringify(body?.detail ?? body)}`,
-        body,
+        "No se pudieron cargar los conectivos del Motor.",
+        response.status,
+        await safeReadJson(response),
       );
     }
 
-    if (res.status === 500) {
+    const data = await response.json();
+
+    /**
+     * Estructura esperada del Motor actual:
+     *
+     * {
+     *   "AND": { ... },
+     *   "OR": { ... },
+     *   "IMPLIES": { ... }
+     * }
+     */
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      return Object.keys(data) as MotorConnective[];
+    }
+
+    /**
+     * Si en el futuro el Motor devuelve directamente un arreglo:
+     *
+     * ["AND", "OR", "IMPLIES"]
+     */
+    if (Array.isArray(data)) {
+      return data as MotorConnective[];
+    }
+
+    throw new MotorApiError(
+      "La respuesta de /conectivos no tiene un formato reconocido.",
+    );
+  }
+
+  /**
+   * Envía el nuevo MotorInputV2 al Motor.
+   *
+   * Endpoint esperado:
+   *   POST /calcular
+   *
+   * El equipo del Motor se adaptará a este nuevo contrato.
+   */
+  async calcular(payload: MotorInputV2): Promise<MotorOutput> {
+    const response = await fetch(`${this.baseUrl}/calcular`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await safeReadJson(response);
+
+    if (!response.ok) {
       throw new MotorApiError(
-        500,
-        `Error interno del Motor: ${body?.detail ?? "sin detalle"}`,
-        body,
+        "El Motor rechazó el dominio enviado por el Editor.",
+        response.status,
+        data,
       );
     }
 
-    if (!res.ok) {
-      throw new MotorApiError(res.status, `Respuesta inesperada del Motor.`, body);
-    }
-
-    return body as MotorOutput;
-  }
-
-  // ── Helper ──
-
-  private async _tryParseBody(res: Response): Promise<any> {
-    try {
-      return await res.json();
-    } catch {
-      return null;
-    }
+    return data as MotorOutput;
   }
 }
 
 // ─────────────────────────────────────────────
-// Mock del cliente (para pruebas y desarrollo)
+// Mock para pruebas
 // ─────────────────────────────────────────────
 
 /**
- * MockMotorClient — implementación de IMotorClient para pruebas y desarrollo.
+ * MockMotorClient
+ * ─────────────────────────────────────────────
+ * Cliente simulado para pruebas del Editor.
  *
- * No hace llamadas HTTP. Retorna respuestas predefinidas o configurables.
- * Permite probar el EditorController sin levantar el Motor.
- *
- * Ejemplo de uso en pruebas:
- *   const mock = new MockMotorClient({ healthOk: true });
- *   const controller = new EditorController(mock);
+ * No calcula propagaciones reales.
+ * Solo confirma que el Editor puede:
+ *   - consultar health;
+ *   - cargar conectivos;
+ *   - enviar MotorInputV2;
+ *   - recibir una respuesta.
  */
 export class MockMotorClient implements IMotorClient {
-  private readonly config: {
-    healthOk?: boolean;
-    conectivos?: string[];
-    calcularResponse?: MotorOutput | MotorApiError;
-  };
+  private readonly available: boolean;
+  private readonly shouldFailOnCalcular: boolean;
+  public readonly receivedPayloads: MotorInputV2[] = [];
 
-  constructor(config: {
-    healthOk?: boolean;
-    conectivos?: string[];
-    calcularResponse?: MotorOutput | MotorApiError;
-  } = {}) {
-    this.config = {
-      healthOk: true,
-      conectivos: ["AND", "OR", "IMPLIES", "BICONDITIONAL", "PROPAGATION", "CONTRAPOSITIONAL", "KJOIN"],
-      ...config,
-    };
+  constructor(options?: {
+    available?: boolean;
+    shouldFailOnCalcular?: boolean;
+  }) {
+    this.available = options?.available ?? true;
+    this.shouldFailOnCalcular = options?.shouldFailOnCalcular ?? false;
   }
 
   async health(): Promise<boolean> {
-    return this.config.healthOk ?? true;
+    return this.available;
   }
 
-  async getConectivos(): Promise<string[]> {
-    return this.config.conectivos ?? [];
+  async listarConectivos(): Promise<MotorConnective[]> {
+    return [
+      "AND",
+      "OR",
+      "IMPLIES",
+      "BICONDITIONAL",
+      "PROPAGATION",
+      "CONTRAPOSITIONAL",
+      "KJOIN",
+    ];
   }
 
-  async calcular(payload: MotorInput): Promise<MotorOutput> {
-    if (this.config.calcularResponse instanceof MotorApiError) {
-      throw this.config.calcularResponse;
-    }
-    if (this.config.calcularResponse) {
-      return this.config.calcularResponse;
+  async calcular(payload: MotorInputV2): Promise<MotorOutput> {
+    this.receivedPayloads.push(payload);
+
+    if (this.shouldFailOnCalcular) {
+      throw new MotorApiError("Error simulado del Motor.", 500, {
+        detail: "Fallo simulado en MockMotorClient.",
+      });
     }
 
-    // Respuesta mínima válida por defecto (sin propagación real)
-    const elementosOut = payload.elementos.map((el) => ({
-      ...el,
-      valor_verdad_inicial: el.valor_verdad,
-    }));
-
+    /**
+     * Respuesta flexible mientras el equipo del Motor define su salida nueva.
+     */
     return {
-      elementos: elementosOut,
-      conjuntos: payload.conjuntos,
-      acciones: [
-        {
-          paso: 1,
-          tipo_accion: "estabilizacion",
-          elemento_id: "*",
-          valor_resultante: "*",
-          descripcion: "Mock: sistema estabilizado en iteración 1.",
-        },
-      ],
-      iteraciones_realizadas: 1,
       estabilizado: true,
+      entrada_recibida: payload,
       resumen: {
-        total_elementos: payload.elementos.length,
-        total_acciones: 1,
-        distribucion_valores: { V: 0, F: 0, N: payload.elementos.length, B: 0 },
+        total_variables: payload.dominio_compartido.variables.length,
+        total_ocurrencias: payload.dominio_compartido.ocurrencias.length,
+        total_pares: payload.dominio_compartido.pares.length,
+        total_arcos: payload.dominio_compartido.arcos.length,
       },
     };
+  }
+}
+
+// ─────────────────────────────────────────────
+// Utilidad interna
+// ─────────────────────────────────────────────
+
+/**
+ * Lee JSON de forma segura.
+ *
+ * Si la respuesta no tiene cuerpo JSON válido, regresa null en lugar de
+ * lanzar un error adicional.
+ */
+async function safeReadJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
   }
 }

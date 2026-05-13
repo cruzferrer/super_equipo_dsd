@@ -1,447 +1,696 @@
 /**
  * editorActions.ts
  * ──────────────────────────────────────────────────────────────────────────
- * Acciones del Editor EPiC Playground.
+ * Acciones puras del Editor EPiC Playground.
  *
- * Cada función recibe el estado actual y devuelve un NUEVO estado (inmutabilidad).
- * Ninguna función calcula propagaciones ni renderiza.
+ * Este archivo contiene funciones que reciben un EditorState y devuelven
+ * un nuevo EditorState modificado.
  *
- * Patrón: acción pura → estado nuevo.
- * El EditorController (editorController.ts) orquesta las llamadas.
+ * No muta el estado original.
+ * No calcula propagaciones.
+ * No renderiza.
+ * No llama al Motor.
  *
- * Limpieza de referencias:
- *   Al eliminar un elemento o conjunto, las acciones limpian automáticamente
- *   todas las referencias rotas (pertenencia, subconjuntos, arcos).
- *   Esto evita que el adaptador genere un MotorInput con referencias inválidas.
+ * Cambio principal del modelo:
  *
- * Relación con el Motor:
- *   Las acciones modifican el EditorState. El adaptador editorToMotorInput.ts
- *   convierte ese estado en MotorInput cuando el usuario pasa a modo ejecución.
+ * Antes:
+ *   elementos / conjuntos / arcos
+ *
+ * Ahora:
+ *   variables / ocurrencias / pares / arcos
+ *
+ * Regla central:
+ *   Las evidencias viven en la VariableLogica.
+ *   Las ocurrencias solo apuntan a una variable mediante variable_id.
+ *
+ * Por lo tanto, si una bolita se coloca sobre una ocurrencia de "p",
+ * realmente se actualiza la variable lógica "p". Todas las ocurrencias
+ * con variable_id = "p" quedan sincronizadas automáticamente.
  * ──────────────────────────────────────────────────────────────────────────
  */
 
+import type { EditorState, EditorMode } from "./editorState";
 import type {
+  VariableLogica,
+  OcurrenciaVisual,
+  ParVisual,
+  EditorArc,
+  Evidencia,
   BelnapValue,
   MotorConnective,
-  ElementoIn,
-  ConjuntoIn,
-  EditorArc,
-  AtributosVisualesElemento,
-  AtributosVisualesConjunto,
-  Posicion,
+  MotorOutput,
 } from "./editorTypes";
-import type { EditorState, EditorMode } from "./editorState";
-import { DEFAULT_CONNECTIVE } from "./editorTypes";
+import { evidenciasToBelnap } from "./editorTypes";
 
 // ─────────────────────────────────────────────
-// Helpers internos
-// ─────────────────────────────────────────────
-
-/** Genera el atributo visual por defecto para un ElementoIn nuevo */
-function defaultAtributosElemento(pos?: Partial<Posicion>): AtributosVisualesElemento {
-  return {
-    posicion: { x: pos?.x ?? 0, y: pos?.y ?? 0 },
-    color: null,
-  };
-}
-
-/** Genera el atributo visual por defecto para un ConjuntoIn nuevo */
-function defaultAtributosConjunto(pos?: Partial<Posicion>): AtributosVisualesConjunto {
-  return {
-    radio: 50,
-    forma: "elipse",
-    posicion: { x: pos?.x ?? 0, y: pos?.y ?? 0 },
-  };
-}
-
-// ─────────────────────────────────────────────
-// 1. Operaciones sobre Elementos
+// Utilidades internas
 // ─────────────────────────────────────────────
 
 /**
- * Crea un nuevo ElementoIn en el estado del Editor.
- * El elemento parte con valor_verdad "N" (sin evidencia) por defecto.
- * No valida duplicados aquí; la validación ocurre en editorValidation.ts.
- */
-export function crearElemento(
-  state: EditorState,
-  id: string,
-  valor_verdad: BelnapValue = "N",
-  pertenencia: string[] = [],
-  posicion?: Partial<Posicion>,
-): EditorState {
-  const nuevo: ElementoIn = {
-    id,
-    valor_verdad,
-    pertenencia: [...pertenencia],
-    proviene: [],
-    atributos_visuales: defaultAtributosElemento(posicion),
-  };
-  return {
-    ...state,
-    elementos: { ...state.elementos, [id]: nuevo },
-  };
-}
-
-/**
- * Edita campos de un ElementoIn existente.
- * Solo actualiza los campos proporcionados (merge parcial).
- */
-export function editarElemento(
-  state: EditorState,
-  id: string,
-  cambios: Partial<Omit<ElementoIn, "id">>,
-): EditorState {
-  const actual = state.elementos[id];
-  if (!actual) return state; // Elemento no encontrado; sin cambio
-
-  const actualizado: ElementoIn = {
-    ...actual,
-    ...cambios,
-    id, // El id nunca cambia
-    atributos_visuales: {
-      ...actual.atributos_visuales,
-      ...(cambios.atributos_visuales ?? {}),
-    },
-  };
-  return {
-    ...state,
-    elementos: { ...state.elementos, [id]: actualizado },
-  };
-}
-
-/**
- * Elimina un ElementoIn y limpia todas sus referencias:
- *   - Lo quita de `pertenencia` en otros elementos (proviene).
- *   - Lo quita como origen/destino en arcos internos.
+ * normalizarEvidencias
+ * ─────────────────────────────────────────────
+ * Elimina evidencias repetidas y conserva solo las permitidas.
  *
- * El MotorInput generado después no tendrá referencias rotas.
+ * Ejemplo:
+ *   ["verde", "verde", "roja"] → ["verde", "roja"]
  */
-export function eliminarElemento(state: EditorState, id: string): EditorState {
-  if (!state.elementos[id]) return state;
+function normalizarEvidencias(evidencias: Evidencia[]): Evidencia[] {
+  const resultado: Evidencia[] = [];
 
-  // Quitar elemento
-  const { [id]: _removed, ...restoElementos } = state.elementos;
+  if (evidencias.includes("verde")) {
+    resultado.push("verde");
+  }
 
-  // Limpiar arcos que referencian este elemento
-  const arcosLimpios = Object.fromEntries(
-    Object.entries(state.arcos).filter(
-      ([, arc]) => arc.origen !== id && arc.destino !== id,
-    ),
-  );
+  if (evidencias.includes("roja")) {
+    resultado.push("roja");
+  }
+
+  return resultado;
+}
+
+/**
+ * actualizarVariableConEvidencias
+ * ─────────────────────────────────────────────
+ * Regresa una copia de la variable con evidencias normalizadas y
+ * valor_actual sincronizado.
+ */
+function actualizarVariableConEvidencias(
+  variable: VariableLogica,
+  evidencias: Evidencia[],
+): VariableLogica {
+  const evidenciasNormalizadas = normalizarEvidencias(evidencias);
 
   return {
-    ...state,
-    elementos: restoElementos,
-    arcos: arcosLimpios,
+    ...variable,
+    evidencias: evidenciasNormalizadas,
+    valor_actual: evidenciasToBelnap(evidenciasNormalizadas),
   };
 }
 
 // ─────────────────────────────────────────────
-// 2. Operaciones sobre Conjuntos
-// ─────────────────────────────────────────────
-
-/**
- * Crea un nuevo ConjuntoIn en el estado del Editor.
- * El conectivo por defecto es "PROPAGATION" según las reglas del proyecto.
- */
-export function crearConjunto(
-  state: EditorState,
-  id: string,
-  conectivo: MotorConnective = DEFAULT_CONNECTIVE,
-  posicion?: Partial<Posicion>,
-): EditorState {
-  const nuevo: ConjuntoIn = {
-    id,
-    subconjuntos: [],
-    es_resultado_de: null,
-    conectivo,
-    atributos_visuales: defaultAtributosConjunto(posicion),
-  };
-  return {
-    ...state,
-    conjuntos: { ...state.conjuntos, [id]: nuevo },
-  };
-}
-
-/**
- * Edita campos de un ConjuntoIn existente (merge parcial).
- */
-export function editarConjunto(
-  state: EditorState,
-  id: string,
-  cambios: Partial<Omit<ConjuntoIn, "id">>,
-): EditorState {
-  const actual = state.conjuntos[id];
-  if (!actual) return state;
-
-  const actualizado: ConjuntoIn = {
-    ...actual,
-    ...cambios,
-    id,
-    atributos_visuales: {
-      ...actual.atributos_visuales,
-      ...(cambios.atributos_visuales ?? {}),
-    },
-  };
-  return {
-    ...state,
-    conjuntos: { ...state.conjuntos, [id]: actualizado },
-  };
-}
-
-/**
- * Elimina un ConjuntoIn y limpia todas sus referencias:
- *   - Lo quita de `pertenencia` en todos los elementos.
- *   - Lo quita de `subconjuntos` en otros conjuntos.
- *   - Revisa si algún conjunto lo tenía como `es_resultado_de` (limpia si aplica).
- */
-export function eliminarConjunto(state: EditorState, id: string): EditorState {
-  if (!state.conjuntos[id]) return state;
-
-  // Quitar conjunto
-  const { [id]: _removed, ...restoConjuntos } = state.conjuntos;
-
-  // Limpiar pertenencia en elementos
-  const elementosLimpios = Object.fromEntries(
-    Object.entries(state.elementos).map(([eid, el]) => [
-      eid,
-      { ...el, pertenencia: el.pertenencia.filter((cid) => cid !== id) },
-    ]),
-  );
-
-  // Limpiar subconjuntos en otros conjuntos
-  const conjuntosLimpios = Object.fromEntries(
-    Object.entries(restoConjuntos).map(([cid, conj]) => [
-      cid,
-      { ...conj, subconjuntos: conj.subconjuntos.filter((sid) => sid !== id) },
-    ]),
-  );
-
-  return {
-    ...state,
-    elementos: elementosLimpios,
-    conjuntos: conjuntosLimpios,
-  };
-}
-
-// ─────────────────────────────────────────────
-// 3. Operaciones sobre Arcos (entidad interna)
-// ─────────────────────────────────────────────
-
-/**
- * Registra un arco dirigido como entidad interna del Editor.
- *
- * IMPORTANTE: Este arco NO se envía directamente al Motor.
- * El adaptador editorToMotorInput.ts es el responsable de traducirlo.
- * Si el equipo decide no usar arcos, esta función puede quedar sin llamadas
- * sin afectar la compatibilidad con el Motor.
- */
-export function registrarArco(
-  state: EditorState,
-  arco: EditorArc,
-): EditorState {
-  return {
-    ...state,
-    arcos: { ...state.arcos, [arco.id]: arco },
-  };
-}
-
-/**
- * Elimina un arco interno por ID.
- */
-export function eliminarArco(state: EditorState, arcId: string): EditorState {
-  const { [arcId]: _removed, ...resto } = state.arcos;
-  return { ...state, arcos: resto };
-}
-
-// ─────────────────────────────────────────────
-// 4. Relaciones de pertenencia y subconjuntos
-// ─────────────────────────────────────────────
-
-/**
- * Asigna un elemento a un conjunto (añade conjuntoId a pertenencia del elemento).
- * No valida existencia; la validación es responsabilidad del validador.
- */
-export function asignarElementoAConjunto(
-  state: EditorState,
-  elementoId: string,
-  conjuntoId: string,
-): EditorState {
-  const el = state.elementos[elementoId];
-  if (!el || el.pertenencia.includes(conjuntoId)) return state;
-
-  return editarElemento(state, elementoId, {
-    pertenencia: [...el.pertenencia, conjuntoId],
-  });
-}
-
-/**
- * Quita la pertenencia de un elemento a un conjunto.
- */
-export function quitarElementoDeConjunto(
-  state: EditorState,
-  elementoId: string,
-  conjuntoId: string,
-): EditorState {
-  const el = state.elementos[elementoId];
-  if (!el) return state;
-
-  return editarElemento(state, elementoId, {
-    pertenencia: el.pertenencia.filter((cid) => cid !== conjuntoId),
-  });
-}
-
-/**
- * Define un subconjunto dentro de un conjunto padre.
- * (añade subId a ConjuntoIn.subconjuntos del padre)
- */
-export function definirSubconjunto(
-  state: EditorState,
-  padreId: string,
-  subId: string,
-): EditorState {
-  const padre = state.conjuntos[padreId];
-  if (!padre || padre.subconjuntos.includes(subId)) return state;
-
-  return editarConjunto(state, padreId, {
-    subconjuntos: [...padre.subconjuntos, subId],
-  });
-}
-
-/**
- * Quita un subconjunto de un conjunto padre.
- */
-export function quitarSubconjunto(
-  state: EditorState,
-  padreId: string,
-  subId: string,
-): EditorState {
-  const padre = state.conjuntos[padreId];
-  if (!padre) return state;
-
-  return editarConjunto(state, padreId, {
-    subconjuntos: padre.subconjuntos.filter((sid) => sid !== subId),
-  });
-}
-
-// ─────────────────────────────────────────────
-// 5. Atributos lógicos y visuales
-// ─────────────────────────────────────────────
-
-/**
- * Asigna un valor de verdad Belnap a un elemento.
- * El Editor solo asigna el valor; el Motor lo usa para calcular propagaciones.
- */
-export function asignarValorVerdad(
-  state: EditorState,
-  elementoId: string,
-  valor: BelnapValue,
-): EditorState {
-  return editarElemento(state, elementoId, { valor_verdad: valor });
-}
-
-/**
- * Asigna un conectivo a un conjunto.
- * El Editor valida que sea un conectivo conocido, pero no aplica la lógica.
- */
-export function asignarConectivo(
-  state: EditorState,
-  conjuntoId: string,
-  conectivo: MotorConnective,
-): EditorState {
-  return editarConjunto(state, conjuntoId, { conectivo });
-}
-
-/**
- * Define el campo es_resultado_de de un conjunto.
- * Representa un cambio de variable o alias lógico (ej: "Z").
- * El Motor genera la acción "cambio_nombre" a partir de este campo;
- * el Editor solo lo registra como dato.
- */
-export function definirResultadoDe(
-  state: EditorState,
-  conjuntoId: string,
-  alias: string | null,
-): EditorState {
-  return editarConjunto(state, conjuntoId, { es_resultado_de: alias });
-}
-
-/**
- * Actualiza atributos visuales de un elemento (posición, color, tamaño, alias…).
- * El Editor los gestiona como datos; el Visualizador los usa para renderizar.
- */
-export function actualizarAtributosVisualesElemento(
-  state: EditorState,
-  elementoId: string,
-  cambios: Partial<AtributosVisualesElemento>,
-): EditorState {
-  const el = state.elementos[elementoId];
-  if (!el) return state;
-
-  return editarElemento(state, elementoId, {
-    atributos_visuales: { ...el.atributos_visuales, ...cambios },
-  });
-}
-
-/**
- * Actualiza atributos visuales de un conjunto (posición, radio, forma…).
- */
-export function actualizarAtributosVisualesConjunto(
-  state: EditorState,
-  conjuntoId: string,
-  cambios: Partial<AtributosVisualesConjunto>,
-): EditorState {
-  const conj = state.conjuntos[conjuntoId];
-  if (!conj) return state;
-
-  return editarConjunto(state, conjuntoId, {
-    atributos_visuales: { ...conj.atributos_visuales, ...cambios },
-  });
-}
-
-// ─────────────────────────────────────────────
-// 6. Modo del Editor
+// Acciones de modo / resultado
 // ─────────────────────────────────────────────
 
 /**
  * Cambia el modo del Editor.
- * El paso de "edicion" a "ejecucion" debe ir precedido de validación completa.
- * El controlador es quien orquesta ese flujo.
  */
 export function setModo(state: EditorState, modo: EditorMode): EditorState {
-  return { ...state, modo };
+  return {
+    ...state,
+    modo,
+  };
 }
 
 /**
- * Registra la última respuesta del Motor en el estado del Editor.
- * El Editor almacena el resultado para que el Visualizador o el Simulador
- * puedan acceder a él. El Editor no interpreta el resultado semánticamente.
+ * Guarda la última salida recibida del Motor.
  */
 export function setMotorOutput(
   state: EditorState,
-  output: import("./editorTypes").MotorOutput | null,
+  motorOutput: MotorOutput | null,
 ): EditorState {
-  return { ...state, motorOutput: output };
+  return {
+    ...state,
+    motorOutput,
+  };
 }
 
 /**
- * Actualiza la lista de conectivos disponibles (cargada desde GET /conectivos).
+ * Actualiza la lista de conectivos disponibles.
  */
 export function setConectivosDisponibles(
   state: EditorState,
-  conectivos: string[],
+  conectivosDisponibles: MotorConnective[],
 ): EditorState {
-  return { ...state, conectivosDisponibles: conectivos };
+  return {
+    ...state,
+    conectivosDisponibles,
+  };
 }
 
 /**
- * Actualiza el límite de iteraciones para el Motor.
- * Debe estar entre 1 y 500 (validado en editorValidation.ts).
+ * Actualiza maxIteraciones en el estado.
+ *
+ * Aunque el nuevo JSON no lo usa directamente en la raíz, lo conservamos
+ * como configuración del Editor por si el Motor nuevo decide consumirlo.
  */
 export function setMaxIteraciones(
   state: EditorState,
-  max: number,
+  maxIteraciones: number,
 ): EditorState {
-  return { ...state, maxIteraciones: max };
+  return {
+    ...state,
+    maxIteraciones,
+  };
+}
+
+// ─────────────────────────────────────────────
+// Acciones sobre variables lógicas
+// ─────────────────────────────────────────────
+
+/**
+ * Crea una variable lógica.
+ *
+ * Si no se especifica valor/evidencia, inicia sin evidencia:
+ *   valor_actual = "N"
+ *   evidencias = []
+ */
+export function crearVariable(
+  state: EditorState,
+  variable: {
+    id: string;
+    valor_actual?: BelnapValue;
+    evidencias?: Evidencia[];
+    alias?: string | null;
+  },
+): EditorState {
+  const evidencias = normalizarEvidencias(variable.evidencias ?? []);
+  const valorActual = variable.valor_actual ?? evidenciasToBelnap(evidencias);
+
+  const nuevaVariable: VariableLogica = {
+    id: variable.id,
+    valor_actual: valorActual,
+    evidencias,
+    alias: variable.alias ?? null,
+  };
+
+  return {
+    ...state,
+    variables: {
+      ...state.variables,
+      [nuevaVariable.id]: nuevaVariable,
+    },
+  };
+}
+
+/**
+ * Edita parcialmente una variable lógica.
+ *
+ * Si se actualizan evidencias, el valor_actual se recalcula automáticamente.
+ * Si solo se actualiza valor_actual, se respeta ese valor.
+ */
+export function editarVariable(
+  state: EditorState,
+  variableId: string,
+  cambios: Partial<Omit<VariableLogica, "id">>,
+): EditorState {
+  const variableActual = state.variables[variableId];
+
+  if (!variableActual) {
+    return state;
+  }
+
+  let variableActualizada: VariableLogica = {
+    ...variableActual,
+    ...cambios,
+  };
+
+  if (cambios.evidencias) {
+    variableActualizada = actualizarVariableConEvidencias(
+      variableActualizada,
+      cambios.evidencias,
+    );
+  }
+
+  return {
+    ...state,
+    variables: {
+      ...state.variables,
+      [variableId]: variableActualizada,
+    },
+  };
+}
+
+/**
+ * Elimina una variable lógica.
+ *
+ * También elimina:
+ *   - ocurrencias que apuntan a esa variable;
+ *   - referencias a esas ocurrencias dentro de pares;
+ *   - arcos que usen esa variable como origen o destino.
+ */
+export function eliminarVariable(
+  state: EditorState,
+  variableId: string,
+): EditorState {
+  const nuevasVariables = { ...state.variables };
+  delete nuevasVariables[variableId];
+
+  const ocurrenciasEliminadas = new Set<string>();
+
+  const nuevasOcurrencias = Object.fromEntries(
+    Object.entries(state.ocurrencias).filter(([ocurrenciaId, ocurrencia]) => {
+      const conservar = ocurrencia.variable_id !== variableId;
+
+      if (!conservar) {
+        ocurrenciasEliminadas.add(ocurrenciaId);
+      }
+
+      return conservar;
+    }),
+  );
+
+  const nuevosPares = Object.fromEntries(
+    Object.entries(state.pares).map(([parId, par]) => [
+      parId,
+      {
+        ...par,
+        ocurrencias: par.ocurrencias.filter(
+          (ocurrenciaId) => !ocurrenciasEliminadas.has(ocurrenciaId),
+        ),
+      },
+    ]),
+  );
+
+  const nuevosArcos = Object.fromEntries(
+    Object.entries(state.arcos).filter(([, arco]) => {
+      const usaVariable =
+        arco.origen_variable === variableId || arco.destino_variable === variableId;
+
+      const usaOcurrenciaEliminada =
+        ocurrenciasEliminadas.has(arco.origen_ocurrencia) ||
+        ocurrenciasEliminadas.has(arco.destino_ocurrencia);
+
+      return !usaVariable && !usaOcurrenciaEliminada;
+    }),
+  );
+
+  return {
+    ...state,
+    variables: nuevasVariables,
+    ocurrencias: nuevasOcurrencias,
+    pares: nuevosPares,
+    arcos: nuevosArcos,
+  };
+}
+
+/**
+ * Agrega una evidencia a una variable lógica.
+ *
+ * Ejemplo:
+ *   agregarEvidenciaAVariable(p, "verde")
+ *   p.evidencias = ["verde"]
+ *   p.valor_actual = "V"
+ */
+export function agregarEvidenciaAVariable(
+  state: EditorState,
+  variableId: string,
+  evidencia: Evidencia,
+): EditorState {
+  const variable = state.variables[variableId];
+
+  if (!variable) {
+    return state;
+  }
+
+  const evidencias = normalizarEvidencias([...variable.evidencias, evidencia]);
+
+  return editarVariable(state, variableId, {
+    evidencias,
+  });
+}
+
+/**
+ * Quita una evidencia de una variable lógica.
+ */
+export function quitarEvidenciaAVariable(
+  state: EditorState,
+  variableId: string,
+  evidencia: Evidencia,
+): EditorState {
+  const variable = state.variables[variableId];
+
+  if (!variable) {
+    return state;
+  }
+
+  const evidencias = variable.evidencias.filter((item) => item !== evidencia);
+
+  return editarVariable(state, variableId, {
+    evidencias,
+  });
+}
+
+/**
+ * Coloca una evidencia sobre una ocurrencia visual.
+ *
+ * Esta función resuelve la regla del profesor:
+ *
+ *   Si pongo una bolita sobre una aparición de "p",
+ *   realmente se actualiza la variable lógica "p".
+ *
+ * Como todas las ocurrencias de "p" apuntan a la misma VariableLogica,
+ * todas quedan sincronizadas automáticamente.
+ */
+export function agregarEvidenciaAOcurrencia(
+  state: EditorState,
+  ocurrenciaId: string,
+  evidencia: Evidencia,
+): EditorState {
+  const ocurrencia = state.ocurrencias[ocurrenciaId];
+
+  if (!ocurrencia) {
+    return state;
+  }
+
+  return agregarEvidenciaAVariable(state, ocurrencia.variable_id, evidencia);
+}
+
+/**
+ * Quita una evidencia desde una ocurrencia visual.
+ *
+ * Igual que agregarEvidenciaAOcurrencia, la modificación real ocurre sobre
+ * la variable lógica asociada.
+ */
+export function quitarEvidenciaAOcurrencia(
+  state: EditorState,
+  ocurrenciaId: string,
+  evidencia: Evidencia,
+): EditorState {
+  const ocurrencia = state.ocurrencias[ocurrenciaId];
+
+  if (!ocurrencia) {
+    return state;
+  }
+
+  return quitarEvidenciaAVariable(state, ocurrencia.variable_id, evidencia);
+}
+
+// ─────────────────────────────────────────────
+// Acciones sobre ocurrencias visuales
+// ─────────────────────────────────────────────
+
+/**
+ * Crea una ocurrencia visual.
+ *
+ * La ocurrencia debe apuntar a una variable lógica mediante variable_id.
+ * La validación formal de existencia se hace en editorValidation.ts.
+ */
+export function crearOcurrencia(
+  state: EditorState,
+  ocurrencia: OcurrenciaVisual,
+): EditorState {
+  return {
+    ...state,
+    ocurrencias: {
+      ...state.ocurrencias,
+      [ocurrencia.id]: ocurrencia,
+    },
+  };
+}
+
+/**
+ * Edita parcialmente una ocurrencia visual.
+ */
+export function editarOcurrencia(
+  state: EditorState,
+  ocurrenciaId: string,
+  cambios: Partial<Omit<OcurrenciaVisual, "id">>,
+): EditorState {
+  const ocurrenciaActual = state.ocurrencias[ocurrenciaId];
+
+  if (!ocurrenciaActual) {
+    return state;
+  }
+
+  return {
+    ...state,
+    ocurrencias: {
+      ...state.ocurrencias,
+      [ocurrenciaId]: {
+        ...ocurrenciaActual,
+        ...cambios,
+      },
+    },
+  };
+}
+
+/**
+ * Elimina una ocurrencia visual.
+ *
+ * También:
+ *   - la quita de cualquier par que la contenga;
+ *   - elimina arcos que la usen como origen o destino.
+ */
+export function eliminarOcurrencia(
+  state: EditorState,
+  ocurrenciaId: string,
+): EditorState {
+  const nuevasOcurrencias = { ...state.ocurrencias };
+  delete nuevasOcurrencias[ocurrenciaId];
+
+  const nuevosPares = Object.fromEntries(
+    Object.entries(state.pares).map(([parId, par]) => [
+      parId,
+      {
+        ...par,
+        ocurrencias: par.ocurrencias.filter((id) => id !== ocurrenciaId),
+      },
+    ]),
+  );
+
+  const nuevosArcos = Object.fromEntries(
+    Object.entries(state.arcos).filter(([, arco]) => {
+      return (
+        arco.origen_ocurrencia !== ocurrenciaId &&
+        arco.destino_ocurrencia !== ocurrenciaId
+      );
+    }),
+  );
+
+  return {
+    ...state,
+    ocurrencias: nuevasOcurrencias,
+    pares: nuevosPares,
+    arcos: nuevosArcos,
+  };
+}
+
+/**
+ * Actualiza la posición visual de una ocurrencia.
+ */
+export function moverOcurrencia(
+  state: EditorState,
+  ocurrenciaId: string,
+  posicion: { x: number; y: number },
+): EditorState {
+  const ocurrencia = state.ocurrencias[ocurrenciaId];
+
+  if (!ocurrencia) {
+    return state;
+  }
+
+  return editarOcurrencia(state, ocurrenciaId, {
+    atributos_visuales: {
+      ...ocurrencia.atributos_visuales,
+      ...posicion,
+    },
+  });
+}
+
+// ─────────────────────────────────────────────
+// Acciones sobre pares/cajas
+// ─────────────────────────────────────────────
+
+/**
+ * Crea un par/caja.
+ */
+export function crearPar(state: EditorState, par: ParVisual): EditorState {
+  return {
+    ...state,
+    pares: {
+      ...state.pares,
+      [par.id]: par,
+    },
+  };
+}
+
+/**
+ * Edita parcialmente un par/caja.
+ */
+export function editarPar(
+  state: EditorState,
+  parId: string,
+  cambios: Partial<Omit<ParVisual, "id">>,
+): EditorState {
+  const parActual = state.pares[parId];
+
+  if (!parActual) {
+    return state;
+  }
+
+  return {
+    ...state,
+    pares: {
+      ...state.pares,
+      [parId]: {
+        ...parActual,
+        ...cambios,
+      },
+    },
+  };
+}
+
+/**
+ * Elimina un par/caja.
+ *
+ * También elimina:
+ *   - ocurrencias que pertenecen a ese par;
+ *   - arcos asociados a esas ocurrencias.
+ */
+export function eliminarPar(state: EditorState, parId: string): EditorState {
+  const par = state.pares[parId];
+
+  if (!par) {
+    return state;
+  }
+
+  const ocurrenciasDelPar = new Set(par.ocurrencias);
+
+  const nuevosPares = { ...state.pares };
+  delete nuevosPares[parId];
+
+  const nuevasOcurrencias = Object.fromEntries(
+    Object.entries(state.ocurrencias).filter(
+      ([ocurrenciaId]) => !ocurrenciasDelPar.has(ocurrenciaId),
+    ),
+  );
+
+  const nuevosArcos = Object.fromEntries(
+    Object.entries(state.arcos).filter(([, arco]) => {
+      return (
+        !ocurrenciasDelPar.has(arco.origen_ocurrencia) &&
+        !ocurrenciasDelPar.has(arco.destino_ocurrencia)
+      );
+    }),
+  );
+
+  return {
+    ...state,
+    pares: nuevosPares,
+    ocurrencias: nuevasOcurrencias,
+    arcos: nuevosArcos,
+  };
+}
+
+/**
+ * Agrega una ocurrencia existente a un par existente.
+ */
+export function agregarOcurrenciaAPar(
+  state: EditorState,
+  parId: string,
+  ocurrenciaId: string,
+): EditorState {
+  const par = state.pares[parId];
+
+  if (!par) {
+    return state;
+  }
+
+  if (par.ocurrencias.includes(ocurrenciaId)) {
+    return state;
+  }
+
+  return editarPar(state, parId, {
+    ocurrencias: [...par.ocurrencias, ocurrenciaId],
+  });
+}
+
+/**
+ * Quita una ocurrencia de un par.
+ */
+export function quitarOcurrenciaDePar(
+  state: EditorState,
+  parId: string,
+  ocurrenciaId: string,
+): EditorState {
+  const par = state.pares[parId];
+
+  if (!par) {
+    return state;
+  }
+
+  return editarPar(state, parId, {
+    ocurrencias: par.ocurrencias.filter((id) => id !== ocurrenciaId),
+  });
+}
+
+/**
+ * Actualiza la posición visual de un par.
+ */
+export function moverPar(
+  state: EditorState,
+  parId: string,
+  posicion: { x: number; y: number },
+): EditorState {
+  const par = state.pares[parId];
+
+  if (!par) {
+    return state;
+  }
+
+  return editarPar(state, parId, {
+    atributos_visuales: {
+      ...par.atributos_visuales,
+      ...posicion,
+    },
+  });
+}
+
+// ─────────────────────────────────────────────
+// Acciones sobre arcos dirigidos
+// ─────────────────────────────────────────────
+
+/**
+ * Crea un arco dirigido.
+ *
+ * La validación de que las ocurrencias y variables existan se hace en
+ * editorValidation.ts.
+ */
+export function crearArco(state: EditorState, arco: EditorArc): EditorState {
+  return {
+    ...state,
+    arcos: {
+      ...state.arcos,
+      [arco.id]: arco,
+    },
+  };
+}
+
+/**
+ * Edita parcialmente un arco.
+ */
+export function editarArco(
+  state: EditorState,
+  arcoId: string,
+  cambios: Partial<Omit<EditorArc, "id">>,
+): EditorState {
+  const arcoActual = state.arcos[arcoId];
+
+  if (!arcoActual) {
+    return state;
+  }
+
+  return {
+    ...state,
+    arcos: {
+      ...state.arcos,
+      [arcoId]: {
+        ...arcoActual,
+        ...cambios,
+      },
+    },
+  };
+}
+
+/**
+ * Elimina un arco.
+ */
+export function eliminarArco(state: EditorState, arcoId: string): EditorState {
+  const nuevosArcos = { ...state.arcos };
+  delete nuevosArcos[arcoId];
+
+  return {
+    ...state,
+    arcos: nuevosArcos,
+  };
 }

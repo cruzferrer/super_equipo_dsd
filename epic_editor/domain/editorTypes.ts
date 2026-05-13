@@ -3,22 +3,37 @@
  * ──────────────────────────────────────────────────────────────────────────
  * Contratos de datos del Editor EPiC Playground.
  *
- * Este archivo define los tipos internos del Editor Y los tipos compatibles
- * con el Motor (schemas.py). La regla de oro es:
- *   - Los tipos "Editor*" son internos al Editor.
- *   - Los tipos que coinciden con schemas.py (ElementoIn, ConjuntoIn, etc.)
- *     son el contrato de salida hacia el Motor.
- *   - El Editor NUNCA importa lógica del Motor; solo conoce las formas de datos.
+ * Este archivo define el nuevo contrato de salida del Editor hacia el Motor.
  *
- * Relación con el Motor:
- *   ElementoIn / ConjuntoIn / MotorInput / MotorOutput
- *   son réplicas exactas del contrato definido en epic_motor/models/schemas.py.
- *   Si schemas.py cambia, este archivo debe actualizarse también.
+ * Cambio principal del modelo:
+ *   Antes:
+ *     - El Editor generaba ElementoIn[] y ConjuntoIn[] para el Motor viejo.
  *
- * Arcos dirigidos:
- *   EditorArc es una entidad INTERNA del Editor. No se envía directamente
- *   al Motor. El adaptador (editorToMotorInput.ts) es el responsable de
- *   traducir arcos a ElementoIn / ConjuntoIn válidos.
+ *   Ahora:
+ *     - El Editor genera un dominio compartido con:
+ *       variables, ocurrencias, pares y arcos.
+ *
+ * Motivo del cambio:
+ *   El profesor pidió que una misma variable pueda aparecer varias veces en
+ *   distintas cajas/pares y que todas las apariciones con el mismo nombre
+ *   compartan las mismas bolitas/evidencias.
+ *
+ * Regla central:
+ *   - VariableLogica representa la entidad lógica real: p, q, r.
+ *   - OcurrenciaVisual representa una aparición visual de esa variable.
+ *   - Varias ocurrencias pueden apuntar a la misma variable mediante variable_id.
+ *   - Las evidencias viven en la VariableLogica, no en cada ocurrencia.
+ *
+ * Ejemplo:
+ *   occ_1.variable_id = "p"
+ *   occ_3.variable_id = "p"
+ *
+ *   Ambas ocurrencias representan la misma variable lógica "p".
+ *   Si p tiene evidencia verde, ambas deben actuar como p con evidencia verde.
+ *
+ * El Editor NO calcula propagaciones.
+ * El Editor NO renderiza directamente.
+ * El Editor solo mantiene y exporta la estructura editable del dominio.
  * ──────────────────────────────────────────────────────────────────────────
  */
 
@@ -28,35 +43,60 @@
 
 /**
  * Los cuatro valores de la lógica de Belnap.
- * El Editor SIEMPRE usa estos valores canónicos al generar MotorInput.
- * El Motor acepta variantes (true/false/none/both), pero el Editor
- * debe normalizar a "V" | "F" | "N" | "B" antes de enviar.
  *
- * Significado semántico:
- *   V → solo evidencia positiva (verde)
- *   F → solo evidencia negativa (rojo)
- *   N → sin evidencia (gris) — valor por defecto
- *   B → evidencia positiva Y negativa simultánea (ámbar / contradicción)
+ * V → evidencia positiva / verdad
+ * F → evidencia negativa / falsedad
+ * N → ninguna evidencia
+ * B → ambas evidencias / contradicción
  */
 export type BelnapValue = "V" | "F" | "N" | "B";
 
-/** Mapeo de color visual → BelnapValue evidencial (solo si el color representa lógica) */
-export const COLOR_TO_BELNAP: Record<string, BelnapValue> = {
-  verde:  "V",
-  rojo:   "F",
-  gris:   "N",
-  ambar:  "B",
-};
+/**
+ * Evidencias o "bolitas" que el usuario puede asignar.
+ *
+ * La evidencia vive en la variable lógica, no en la ocurrencia visual.
+ * Esto permite que todas las ocurrencias con el mismo variable_id compartan
+ * las mismas bolitas.
+ */
+export type Evidencia = "verde" | "roja";
+
+/**
+ * Lista fija del dominio de valores usado por el proyecto.
+ * Se incluye en la salida del Editor para que el Motor conozca el dominio lógico.
+ */
+export const DOMINIO_VALORES: BelnapValue[] = ["V", "F", "N", "B"];
+
+/**
+ * Convierte un conjunto de evidencias al valor de Belnap correspondiente.
+ *
+ * []                  → N
+ * ["verde"]           → V
+ * ["roja"]            → F
+ * ["verde", "roja"]   → B
+ */
+export function evidenciasToBelnap(evidencias: Evidencia[]): BelnapValue {
+  const tieneVerde = evidencias.includes("verde");
+  const tieneRoja = evidencias.includes("roja");
+
+  if (tieneVerde && tieneRoja) return "B";
+  if (tieneVerde) return "V";
+  if (tieneRoja) return "F";
+  return "N";
+}
 
 // ─────────────────────────────────────────────
-// Conectivos válidos del Motor
+// Conectivos válidos
 // ─────────────────────────────────────────────
 
 /**
- * Conectivos reconocidos por el Motor (connectives.py → REGISTRY).
- * El Editor usa esta lista para validar ConjuntoIn.conectivo.
- * El Editor NO implementa la lógica de ningún conectivo.
- * El conectivo por defecto es "PROPAGATION".
+ * Conectivos reconocidos por el Motor según el código existente del Motor.
+ *
+ * Estos nombres vienen del REGISTRY en connectives.py:
+ *   AND, OR, IMPLIES, BICONDITIONAL, PROPAGATION,
+ *   CONTRAPOSITIONAL, KJOIN.
+ *
+ * El Editor no implementa la lógica de estos conectivos.
+ * Solo los registra como parte de arcos o relaciones.
  */
 export type MotorConnective =
   | "AND"
@@ -69,166 +109,288 @@ export type MotorConnective =
 
 export const DEFAULT_CONNECTIVE: MotorConnective = "PROPAGATION";
 
-/** Lista estática de fallback si GET /conectivos no está disponible */
 export const KNOWN_CONNECTIVES: MotorConnective[] = [
-  "AND", "OR", "IMPLIES", "BICONDITIONAL",
-  "PROPAGATION", "CONTRAPOSITIONAL", "KJOIN",
+  "AND",
+  "OR",
+  "IMPLIES",
+  "BICONDITIONAL",
+  "PROPAGATION",
+  "CONTRAPOSITIONAL",
+  "KJOIN",
 ];
 
 // ─────────────────────────────────────────────
-// Atributos visuales (datos, no renderizado)
+// Estado general del sistema
 // ─────────────────────────────────────────────
 
 /**
- * Posición en el canvas lógico.
- * El Editor la almacena como dato; el Visualizador la usa para dibujar.
+ * Modo general del sistema.
+ *
+ * edicion:
+ *   El usuario está construyendo/modificando el dominio.
+ *
+ * ejecucion:
+ *   El dominio se envió o está listo para enviarse al Motor.
  */
-export interface Posicion {
+export type EstadoSistema = "edicion" | "ejecucion";
+
+// ─────────────────────────────────────────────
+// Atributos visuales mínimos
+// ─────────────────────────────────────────────
+
+/**
+ * Posición visual mínima.
+ *
+ * El Editor guarda coordenadas porque el usuario puede colocar dibujitos
+ * en diferentes partes de la superficie de edición.
+ *
+ * El Editor no decide cómo se renderiza.
+ * El Visualizador decide la forma, color exacto, estilos y tamaños.
+ */
+export interface AtributosVisualesBasicos {
   x: number;
   y: number;
 }
 
-/**
- * Atributos visuales de un ElementoIn.
- * Son metadatos que el Editor gestiona como datos estructurales.
- * El Editor NO los renderiza directamente.
- */
-export interface AtributosVisualesElemento {
-  posicion: Posicion;
-  /** Color visual (hex, nombre CSS o null). Puede diferir del valor lógico. */
-  color: string | null;
-  /** Tamaño del nodo. Metadato para el Visualizador. */
-  tamano?: number;
-  /** Alias visible al usuario (etiqueta). */
-  alias?: string;
-  /** Metadatos adicionales para extensión futura. */
-  [key: string]: unknown;
-}
-
-/**
- * Atributos visuales de un ConjuntoIn.
- * Ídem: datos para el Visualizador, no renderizados por el Editor.
- */
-export interface AtributosVisualesConjunto {
-  radio: number;
-  forma: string;   // "elipse", "rectangulo", etc.
-  posicion: Posicion;
-  [key: string]: unknown;
-}
-
 // ─────────────────────────────────────────────
-// Contratos del Motor (réplica de schemas.py)
+// Nuevo modelo del Dominio Compartido
 // ─────────────────────────────────────────────
 
 /**
- * Elemento tal como lo recibe el Motor.
- * Réplica exacta de ElementoIn en schemas.py.
+ * VariableLogica
+ * ─────────────────────────────────────────────
+ * Representa una variable lógica real del sistema.
  *
- * Cada círculo, nodo o proposición visual del Editor debe poder
- * traducirse a esta estructura antes de enviar al Motor.
+ * Ejemplos:
+ *   p
+ *   q
+ *   r
+ *
+ * Esta entidad guarda el valor lógico y las evidencias.
+ * Si la variable "p" aparece en varias ocurrencias visuales, todas apuntan
+ * a esta misma VariableLogica mediante variable_id: "p".
  */
-export interface ElementoIn {
+export interface VariableLogica {
+  /**
+   * Nombre lógico de la variable.
+   * Ejemplo: "p", "q", "r".
+   */
   id: string;
-  valor_verdad: BelnapValue;
-  pertenencia: string[];      // IDs de ConjuntoIn a los que pertenece
-  proviene: string[];         // Trazabilidad de origen (puede estar vacío)
-  atributos_visuales: AtributosVisualesElemento;
+
+  /**
+   * Valor lógico actual de la variable.
+   * Debe coincidir con las evidencias.
+   *
+   * []                  → N
+   * ["verde"]           → V
+   * ["roja"]            → F
+   * ["verde", "roja"]   → B
+   */
+  valor_actual: BelnapValue;
+
+  /**
+   * Bolitas/evidencias asignadas a la variable.
+   * Al vivir aquí, todas las ocurrencias de la misma variable comparten
+   * las mismas bolitas.
+   */
+  evidencias: Evidencia[];
+
+  /**
+   * Nombre alternativo o explicación opcional.
+   *
+   * Ejemplo:
+   *   id: "z"
+   *   alias: "p_implica_q"
+   *
+   * Si no se usa, va en null.
+   */
+  alias: string | null;
 }
 
 /**
- * Elemento con valor calculado por el Motor (solo en MotorOutput).
- * El Editor no produce ElementoOut; lo recibe como respuesta del Motor.
- */
-export interface ElementoOut extends ElementoIn {
-  valor_verdad_inicial: string;
-}
-
-/**
- * Conjunto / contenedor tal como lo recibe el Motor.
- * Réplica exacta de ConjuntoIn en schemas.py.
+ * OcurrenciaVisual
+ * ─────────────────────────────────────────────
+ * Representa una aparición visual de una variable dentro de un par/caja.
  *
- * Puede representar: agrupaciones visuales, contextos de propagación,
- * relaciones estructurales o entidades compuestas.
+ * Ejemplo:
+ *   occ_1 aparece en par_1 y representa a p.
+ *   occ_3 aparece en par_2 y también representa a p.
+ *
+ * Ambas son ocurrencias distintas, pero apuntan a la misma variable lógica.
  */
-export interface ConjuntoIn {
+export interface OcurrenciaVisual {
+  /**
+   * Identificador único de la ocurrencia visual.
+   * Ejemplo: "occ_1".
+   */
   id: string;
-  subconjuntos: string[];         // IDs de otros ConjuntoIn anidados
-  es_resultado_de: string | null; // Alias/renombramiento lógico ("Z")
-  conectivo: MotorConnective;
-  atributos_visuales: AtributosVisualesConjunto;
+
+  /**
+   * ID de la VariableLogica que representa esta ocurrencia.
+   * Ejemplo: "p".
+   */
+  variable_id: string;
+
+  /**
+   * ID del par/caja donde aparece esta ocurrencia.
+   * Ejemplo: "par_1".
+   */
+  par_id: string;
+
+  /**
+   * Posición de esta aparición visual.
+   * El Visualizador decide cómo dibujarla.
+   */
+  atributos_visuales: AtributosVisualesBasicos;
 }
 
 /**
- * Payload completo que el Editor envía al Motor vía POST /calcular.
- * Réplica exacta de MotorInput en schemas.py.
- */
-export interface MotorInput {
-  elementos: ElementoIn[];
-  conjuntos: ConjuntoIn[];
-  max_iteraciones: number; // 1..500, por defecto 100
-}
-
-/**
- * Respuesta del Motor tras calcular propagaciones.
- * El Editor la recibe pero no la interpreta semánticamente.
- * La interpretación semántica del resultado es responsabilidad del Simulador.
- */
-export interface MotorOutput {
-  elementos: ElementoOut[];
-  conjuntos: ConjuntoIn[];
-  acciones: Accion[];
-  iteraciones_realizadas: number;
-  estabilizado: boolean;
-  resumen: Record<string, unknown>;
-}
-
-/**
- * Acción generada por el Motor durante la propagación.
- * Describe eventos como propagación, estabilización o cambio de nombre.
- * El Editor no genera Acciones; las recibe en MotorOutput.
- */
-export interface Accion {
-  paso: number;
-  tipo_accion: string;
-  elemento_id: string;
-  origen?: string;
-  destino?: string;
-  valor_anterior?: string;
-  valor_resultante: string;
-  conectivo_usado?: string;
-  descripcion: string;
-}
-
-// ─────────────────────────────────────────────
-// Entidades internas del Editor
-// ─────────────────────────────────────────────
-
-/**
- * Arco dirigido — entidad INTERNA del Editor.
+ * ParVisual
+ * ─────────────────────────────────────────────
+ * Representa una caja/par que agrupa ocurrencias.
  *
- * El Motor NO recibe arcos directamente. Esta estructura existe solo
- * dentro del Editor para representar intenciones estructurales como:
- *   - relación entre dos elementos
- *   - implicación entre proposiciones
- *   - dependencia visual entre nodos
+ * Según lo mencionado por el profesor, las expresiones pueden mostrarse
+ * en cajas de pares. Por eso esta entidad conserva qué ocurrencias están
+ * dentro de cada par.
+ */
+export interface ParVisual {
+  /**
+   * Identificador único del par/caja.
+   * Ejemplo: "par_1".
+   */
+  id: string;
+
+  /**
+   * Lista de ocurrencias contenidas en este par.
+   * Ejemplo: ["occ_1", "occ_2"].
+   */
+  ocurrencias: string[];
+
+  /**
+   * Posición visual mínima del par/caja.
+   * El Visualizador decide cómo dibujar la caja.
+   */
+  atributos_visuales: AtributosVisualesBasicos;
+}
+
+/**
+ * EditorArc
+ * ─────────────────────────────────────────────
+ * Representa un arco dirigido entre dos ocurrencias.
  *
- * Antes de llamar al Motor, el adaptador (editorToMotorInput.ts)
- * traduce cada arco a ElementoIn/ConjuntoIn válidos.
+ * El arco conserva dos niveles de información:
  *
- * Si el equipo decide no usar arcos internos, este tipo puede eliminarse
- * sin afectar el resto del Editor ni el contrato con el Motor.
- * El adaptador absorberá ese cambio de forma aislada.
+ * 1. Nivel visual:
+ *    origen_ocurrencia y destino_ocurrencia indican qué dibujitos conecta.
+ *
+ * 2. Nivel lógico:
+ *    origen_variable y destino_variable indican qué variables conecta.
+ *
+ * Ejemplo:
+ *   occ_1 representa p
+ *   occ_2 representa q
+ *
+ *   arco a1:
+ *     origen_ocurrencia: occ_1
+ *     destino_ocurrencia: occ_2
+ *     origen_variable: p
+ *     destino_variable: q
+ *     conectivo: IMPLIES
+ *
+ * Esto representa p → q.
  */
 export interface EditorArc {
   id: string;
-  origen: string;              // ID de ElementoIn origen
-  destino: string;             // ID de ElementoIn destino
-  conectivo: MotorConnective;  // Intención lógica del arco
-  atributos_visuales: {
-    color?: string;
-    grosor?: number;
-    [key: string]: unknown;
-  };
+
+  /**
+   * Ocurrencia visual desde donde sale el arco.
+   */
+  origen_ocurrencia: string;
+
+  /**
+   * Ocurrencia visual hacia donde llega el arco.
+   */
+  destino_ocurrencia: string;
+
+  /**
+   * Variable lógica de origen.
+   * Debe coincidir con variable_id de origen_ocurrencia.
+   */
+  origen_variable: string;
+
+  /**
+   * Variable lógica de destino.
+   * Debe coincidir con variable_id de destino_ocurrencia.
+   */
+  destino_variable: string;
+
+  /**
+   * Conectivo asociado a la relación.
+   * Ejemplo: IMPLIES para p → q.
+   */
+  conectivo: MotorConnective;
+}
+
+/**
+ * DominioCompartido
+ * ─────────────────────────────────────────────
+ * Estado estructural central producido por el Editor.
+ *
+ * Contiene:
+ *   - variables: entidades lógicas reales.
+ *   - ocurrencias: apariciones visuales de variables.
+ *   - pares: cajas que agrupan ocurrencias.
+ *   - arcos: relaciones dirigidas entre ocurrencias/variables.
+ */
+export interface DominioCompartido {
+  variables: VariableLogica[];
+  ocurrencias: OcurrenciaVisual[];
+  pares: ParVisual[];
+  arcos: EditorArc[];
+}
+
+/**
+ * MotorInputV2
+ * ─────────────────────────────────────────────
+ * Nueva salida completa del Editor hacia el Motor.
+ *
+ * Se llama MotorInputV2 porque sigue siendo la entrada que recibirá el Motor,
+ * pero ya no usa el contrato viejo de:
+ *
+ *   elementos + conjuntos + max_iteraciones
+ *
+ * Ahora usa:
+ *
+ *   variables + ocurrencias + pares + arcos
+ *
+ * Esto permite representar variables repetidas visualmente sin duplicar
+ * su estado lógico.
+ */
+export interface MotorInputV2 {
+  proyecto: "EPIC Playground PoC";
+  version: "2.0";
+  estado_sistema: EstadoSistema;
+  dominio_valores: BelnapValue[];
+  dominio_compartido: DominioCompartido;
+}
+
+// ─────────────────────────────────────────────
+// Respuesta del Motor
+// ─────────────────────────────────────────────
+
+/**
+ * MotorOutput
+ * ─────────────────────────────────────────────
+ * Respuesta del Motor.
+ *
+ * Como el equipo del Motor se va a adaptar al nuevo contrato, dejamos esta
+ * estructura flexible temporalmente.
+ *
+ * Cuando el equipo del Motor defina su salida exacta, este tipo debe hacerse
+ * más específico.
+ */
+export interface MotorOutput {
+  [key: string]: unknown;
 }
 
 // ─────────────────────────────────────────────
@@ -240,10 +402,10 @@ export interface EditorArc {
  * Diseñado para ser útil para otros componentes o para la UI.
  */
 export interface EditorValidationError {
-  field: string;       // Ej: "elementos[0].pertenencia"
-  message: string;     // Ej: "El conjunto C99 no existe"
+  field: string;
+  message: string;
   severity: "error" | "warning";
-  entityId?: string;   // ID del elemento o conjunto afectado
+  entityId?: string;
 }
 
 /**

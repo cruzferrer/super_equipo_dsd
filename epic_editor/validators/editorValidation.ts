@@ -3,327 +3,443 @@
  * ──────────────────────────────────────────────────────────────────────────
  * Validaciones estructurales del Editor EPiC Playground.
  *
- * Responsabilidad ÚNICA (SRP):
- *   Verificar que el EditorState es estructuralmente correcto antes de
- *   generar un MotorInput. No calcula nada, no renderiza nada.
+ * Este archivo revisa que el estado interno del Editor sea consistente antes
+ * de generar el JSON de salida hacia el Motor.
  *
- * Qué valida:
- *   1. IDs únicos de elementos y conjuntos.
- *   2. Valores de verdad Belnap válidos ("V" | "F" | "N" | "B").
- *   3. Conectivos válidos reconocidos por el Motor.
- *   4. Pertenencias que apuntan a conjuntos existentes.
- *   5. Subconjuntos que apuntan a conjuntos existentes.
- *   6. Ausencia de ciclos en jerarquías de subconjuntos.
- *   7. Formato válido de es_resultado_de.
- *   8. max_iteraciones entre 1 y 500.
- *   9. Referencias rotas tras eliminar entidades.
- *  10. Arcos internos con origen/destino válidos (si existen).
- *  11. Conectivos de arcos internos válidos.
+ * Nuevo modelo:
+ *   - variables: entidades lógicas reales.
+ *   - ocurrencias: apariciones visuales de variables.
+ *   - pares: cajas que agrupan ocurrencias.
+ *   - arcos: relaciones dirigidas entre ocurrencias/variables.
  *
- * Qué NO valida:
- *   - Propagaciones lógicas (responsabilidad del Motor).
- *   - Semántica del resultado (responsabilidad del Simulador).
- *   - Consistencia de renderizado (responsabilidad del Visualizador).
+ * Regla principal:
+ *   Varias ocurrencias pueden apuntar a la misma variable mediante variable_id.
+ *   Por eso, las evidencias y el valor lógico viven en VariableLogica.
+ *
+ * Este archivo NO calcula propagaciones.
+ * Este archivo NO renderiza.
+ * Este archivo NO llama al Motor.
  * ──────────────────────────────────────────────────────────────────────────
  */
 
 import type { EditorState } from "../domain/editorState";
 import type {
-  EditorValidationError,
-  ValidationResult,
   BelnapValue,
+  EditorValidationError,
+  Evidencia,
+  MotorConnective,
+  ValidationResult,
 } from "../domain/editorTypes";
-import { KNOWN_CONNECTIVES } from "../domain/editorTypes";
+import {
+  evidenciasToBelnap,
+  KNOWN_CONNECTIVES,
+} from "../domain/editorTypes";
 
 // ─────────────────────────────────────────────
-// Constantes de validación
-// ─────────────────────────────────────────────
-
-const VALID_BELNAP: ReadonlySet<BelnapValue> = new Set(["V", "F", "N", "B"]);
-const MAX_ITERACIONES_LIMIT = { min: 1, max: 500 };
-
-// ─────────────────────────────────────────────
-// Helpers internos
-// ─────────────────────────────────────────────
-
-function err(
-  field: string,
-  message: string,
-  entityId?: string,
-): EditorValidationError {
-  return { field, message, severity: "error", entityId };
-}
-
-function warn(
-  field: string,
-  message: string,
-  entityId?: string,
-): EditorValidationError {
-  return { field, message, severity: "warning", entityId };
-}
-
-/**
- * Detecta ciclos en la jerarquía de subconjuntos mediante DFS.
- * Retorna true si existe un ciclo a partir del nodo dado.
- */
-function hasCycle(
-  start: string,
-  subconjuntosMap: Record<string, string[]>,
-  visited: Set<string> = new Set(),
-  path: Set<string> = new Set(),
-): boolean {
-  if (path.has(start)) return true;
-  if (visited.has(start)) return false;
-
-  visited.add(start);
-  path.add(start);
-
-  for (const sub of subconjuntosMap[start] ?? []) {
-    if (hasCycle(sub, subconjuntosMap, visited, new Set(path))) return true;
-  }
-
-  return false;
-}
-
-// ─────────────────────────────────────────────
-// Validaciones individuales
-// ─────────────────────────────────────────────
-
-/** Valida que no haya IDs duplicados en elementos */
-function validarIdsElementos(state: EditorState): EditorValidationError[] {
-  // Como el estado usa Record<id, Elemento>, los IDs son únicos por construcción.
-  // Esta validación es relevante si se recibe un array externo.
-  return [];
-}
-
-/** Valida que no haya IDs duplicados en conjuntos */
-function validarIdsConjuntos(state: EditorState): EditorValidationError[] {
-  return [];
-}
-
-/** Valida valores de verdad de todos los elementos */
-function validarValoresBelnap(state: EditorState): EditorValidationError[] {
-  const errores: EditorValidationError[] = [];
-  for (const [id, el] of Object.entries(state.elementos)) {
-    if (!VALID_BELNAP.has(el.valor_verdad as BelnapValue)) {
-      errores.push(
-        err(
-          `elementos[${id}].valor_verdad`,
-          `Valor "${el.valor_verdad}" no es válido. Use: V, F, N, B.`,
-          id,
-        ),
-      );
-    }
-  }
-  return errores;
-}
-
-/** Valida conectivos de todos los conjuntos contra la lista conocida */
-function validarConectivos(state: EditorState): EditorValidationError[] {
-  const errores: EditorValidationError[] = [];
-  const disponibles = new Set([
-    ...KNOWN_CONNECTIVES,
-    ...state.conectivosDisponibles,
-  ]);
-
-  for (const [id, conj] of Object.entries(state.conjuntos)) {
-    if (!disponibles.has(conj.conectivo as any)) {
-      errores.push(
-        err(
-          `conjuntos[${id}].conectivo`,
-          `Conectivo "${conj.conectivo}" no reconocido. Disponibles: ${[...disponibles].join(", ")}.`,
-          id,
-        ),
-      );
-    }
-  }
-  return errores;
-}
-
-/** Valida que cada elemento pertenezca solo a conjuntos existentes */
-function validarPertenencias(state: EditorState): EditorValidationError[] {
-  const errores: EditorValidationError[] = [];
-  const conjuntoIds = new Set(Object.keys(state.conjuntos));
-
-  for (const [eid, el] of Object.entries(state.elementos)) {
-    el.pertenencia.forEach((cid, idx) => {
-      if (!conjuntoIds.has(cid)) {
-        errores.push(
-          err(
-            `elementos[${eid}].pertenencia[${idx}]`,
-            `El conjunto "${cid}" no existe en el estado del Editor.`,
-            eid,
-          ),
-        );
-      }
-    });
-  }
-  return errores;
-}
-
-/** Valida que cada conjunto referencie subconjuntos existentes */
-function validarSubconjuntos(state: EditorState): EditorValidationError[] {
-  const errores: EditorValidationError[] = [];
-  const conjuntoIds = new Set(Object.keys(state.conjuntos));
-
-  for (const [cid, conj] of Object.entries(state.conjuntos)) {
-    conj.subconjuntos.forEach((sid, idx) => {
-      if (!conjuntoIds.has(sid)) {
-        errores.push(
-          err(
-            `conjuntos[${cid}].subconjuntos[${idx}]`,
-            `El subconjunto "${sid}" no existe en el estado del Editor.`,
-            cid,
-          ),
-        );
-      }
-    });
-  }
-  return errores;
-}
-
-/** Detecta ciclos en la jerarquía de subconjuntos */
-function validarCiclosSubconjuntos(state: EditorState): EditorValidationError[] {
-  const errores: EditorValidationError[] = [];
-  const subMap = Object.fromEntries(
-    Object.entries(state.conjuntos).map(([id, c]) => [id, c.subconjuntos]),
-  );
-
-  for (const id of Object.keys(state.conjuntos)) {
-    if (hasCycle(id, subMap)) {
-      errores.push(
-        err(
-          `conjuntos[${id}].subconjuntos`,
-          `Ciclo detectado en la jerarquía de subconjuntos a partir de "${id}".`,
-          id,
-        ),
-      );
-    }
-  }
-  return errores;
-}
-
-/** Valida formato de es_resultado_de (debe ser string no vacío o null) */
-function validarEsResultadoDe(state: EditorState): EditorValidationError[] {
-  const errores: EditorValidationError[] = [];
-  for (const [id, conj] of Object.entries(state.conjuntos)) {
-    if (conj.es_resultado_de !== null && conj.es_resultado_de.trim() === "") {
-      errores.push(
-        err(
-          `conjuntos[${id}].es_resultado_de`,
-          `"es_resultado_de" no puede ser una cadena vacía. Use null si no aplica.`,
-          id,
-        ),
-      );
-    }
-  }
-  return errores;
-}
-
-/** Valida que maxIteraciones esté en el rango permitido */
-function validarMaxIteraciones(state: EditorState): EditorValidationError[] {
-  const { min, max } = MAX_ITERACIONES_LIMIT;
-  if (state.maxIteraciones < min || state.maxIteraciones > max) {
-    return [
-      err(
-        "maxIteraciones",
-        `max_iteraciones debe estar entre ${min} y ${max}. Actual: ${state.maxIteraciones}.`,
-      ),
-    ];
-  }
-  return [];
-}
-
-/** Valida arcos internos (si existen): origen, destino y conectivo */
-function validarArcosInternos(state: EditorState): EditorValidationError[] {
-  const errores: EditorValidationError[] = [];
-  const elementoIds = new Set(Object.keys(state.elementos));
-  const disponibles = new Set([
-    ...KNOWN_CONNECTIVES,
-    ...state.conectivosDisponibles,
-  ]);
-
-  for (const [aid, arc] of Object.entries(state.arcos)) {
-    if (!elementoIds.has(arc.origen)) {
-      errores.push(
-        err(
-          `arcos[${aid}].origen`,
-          `El elemento origen "${arc.origen}" no existe.`,
-          aid,
-        ),
-      );
-    }
-    if (!elementoIds.has(arc.destino)) {
-      errores.push(
-        err(
-          `arcos[${aid}].destino`,
-          `El elemento destino "${arc.destino}" no existe.`,
-          aid,
-        ),
-      );
-    }
-    if (!disponibles.has(arc.conectivo as any)) {
-      errores.push(
-        err(
-          `arcos[${aid}].conectivo`,
-          `Conectivo "${arc.conectivo}" del arco no reconocido.`,
-          aid,
-        ),
-      );
-    }
-  }
-  return errores;
-}
-
-// ─────────────────────────────────────────────
-// Función principal de validación
+// Validaciones simples reutilizables
 // ─────────────────────────────────────────────
 
 /**
- * Ejecuta todas las validaciones sobre el EditorState.
- * Retorna ValidationResult con la lista de errores.
- *
- * Debe llamarse ANTES de:
- *   - generar MotorInput (adaptador)
- *   - enviar al Motor (cliente API)
- *   - cambiar a modo "ejecucion"
- */
-export function validarEstado(state: EditorState): ValidationResult {
-  const errores: EditorValidationError[] = [
-    ...validarIdsElementos(state),
-    ...validarIdsConjuntos(state),
-    ...validarValoresBelnap(state),
-    ...validarConectivos(state),
-    ...validarPertenencias(state),
-    ...validarSubconjuntos(state),
-    ...validarCiclosSubconjuntos(state),
-    ...validarEsResultadoDe(state),
-    ...validarMaxIteraciones(state),
-    ...validarArcosInternos(state),
-  ];
-
-  return {
-    valid: errores.filter((e) => e.severity === "error").length === 0,
-    errors: errores,
-  };
-}
-
-/**
- * Valida un único valor de verdad Belnap.
- * Útil para validación inline al editar un elemento.
+ * Verifica si un valor pertenece al dominio de Belnap.
  */
 export function esBelnapValido(valor: string): valor is BelnapValue {
-  return VALID_BELNAP.has(valor as BelnapValue);
+  return ["V", "F", "N", "B"].includes(valor);
 }
 
 /**
- * Valida un conectivo contra la lista disponible.
- * Útil para validación inline al asignar conectivo a un conjunto.
+ * Verifica si una evidencia es válida.
+ */
+export function esEvidenciaValida(evidencia: string): evidencia is Evidencia {
+  return ["verde", "roja"].includes(evidencia);
+}
+
+/**
+ * Verifica si un conectivo existe dentro de la lista conocida.
  */
 export function esConectivoValido(
   conectivo: string,
-  disponibles: string[],
-): boolean {
-  const todos = new Set([...KNOWN_CONNECTIVES, ...disponibles]);
-  return todos.has(conectivo);
+  conectivosDisponibles: string[] = KNOWN_CONNECTIVES,
+): conectivo is MotorConnective {
+  return conectivosDisponibles.includes(conectivo);
+}
+
+/**
+ * Agrega un error al arreglo de errores.
+ */
+function agregarError(
+  errors: EditorValidationError[],
+  error: EditorValidationError,
+): void {
+  errors.push(error);
+}
+
+// ─────────────────────────────────────────────
+// Validación principal del estado
+// ─────────────────────────────────────────────
+
+/**
+ * validarEstado
+ * ─────────────────────────────────────────────
+ * Revisa que el EditorState sea estructuralmente consistente.
+ *
+ * Valida:
+ *   - variables con valores válidos;
+ *   - evidencias válidas;
+ *   - coherencia entre evidencias y valor_actual;
+ *   - ocurrencias que apunten a variables existentes;
+ *   - ocurrencias que apunten a pares existentes;
+ *   - pares que contengan ocurrencias existentes;
+ *   - arcos que apunten a ocurrencias existentes;
+ *   - arcos que apunten a variables existentes;
+ *   - coincidencia entre ocurrencia y variable declarada en el arco;
+ *   - conectivos válidos;
+ *   - maxIteraciones en rango razonable.
+ */
+export function validarEstado(state: EditorState): ValidationResult {
+  const errors: EditorValidationError[] = [];
+
+  validarVariables(state, errors);
+  validarOcurrencias(state, errors);
+  validarPares(state, errors);
+  validarArcos(state, errors);
+  validarMaxIteraciones(state, errors);
+
+  return {
+    valid: errors.filter((error) => error.severity === "error").length === 0,
+    errors,
+  };
+}
+
+// ─────────────────────────────────────────────
+// Variables
+// ─────────────────────────────────────────────
+
+function validarVariables(
+  state: EditorState,
+  errors: EditorValidationError[],
+): void {
+  for (const [variableId, variable] of Object.entries(state.variables)) {
+    if (variable.id !== variableId) {
+      agregarError(errors, {
+        field: `variables.${variableId}.id`,
+        message: `La variable está indexada como "${variableId}", pero su id interno es "${variable.id}".`,
+        severity: "error",
+        entityId: variableId,
+      });
+    }
+
+    if (!esBelnapValido(variable.valor_actual)) {
+      agregarError(errors, {
+        field: `variables.${variableId}.valor_actual`,
+        message: `El valor "${variable.valor_actual}" no pertenece al dominio V/F/N/B.`,
+        severity: "error",
+        entityId: variableId,
+      });
+    }
+
+    for (const evidencia of variable.evidencias) {
+      if (!esEvidenciaValida(evidencia)) {
+        agregarError(errors, {
+          field: `variables.${variableId}.evidencias`,
+          message: `La evidencia "${evidencia}" no es válida. Usa "verde" o "roja".`,
+          severity: "error",
+          entityId: variableId,
+        });
+      }
+    }
+
+    const evidenciasSinDuplicados = new Set(variable.evidencias);
+
+    if (evidenciasSinDuplicados.size !== variable.evidencias.length) {
+      agregarError(errors, {
+        field: `variables.${variableId}.evidencias`,
+        message: `La variable "${variableId}" tiene evidencias repetidas.`,
+        severity: "warning",
+        entityId: variableId,
+      });
+    }
+
+    const valorEsperado = evidenciasToBelnap(
+      variable.evidencias.filter(esEvidenciaValida),
+    );
+
+    if (variable.valor_actual !== valorEsperado) {
+      agregarError(errors, {
+        field: `variables.${variableId}.valor_actual`,
+        message: `El valor_actual "${variable.valor_actual}" no coincide con sus evidencias. Se esperaba "${valorEsperado}".`,
+        severity: "error",
+        entityId: variableId,
+      });
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// Ocurrencias
+// ─────────────────────────────────────────────
+
+function validarOcurrencias(
+  state: EditorState,
+  errors: EditorValidationError[],
+): void {
+  for (const [ocurrenciaId, ocurrencia] of Object.entries(state.ocurrencias)) {
+    if (ocurrencia.id !== ocurrenciaId) {
+      agregarError(errors, {
+        field: `ocurrencias.${ocurrenciaId}.id`,
+        message: `La ocurrencia está indexada como "${ocurrenciaId}", pero su id interno es "${ocurrencia.id}".`,
+        severity: "error",
+        entityId: ocurrenciaId,
+      });
+    }
+
+    if (!state.variables[ocurrencia.variable_id]) {
+      agregarError(errors, {
+        field: `ocurrencias.${ocurrenciaId}.variable_id`,
+        message: `La ocurrencia "${ocurrenciaId}" apunta a la variable inexistente "${ocurrencia.variable_id}".`,
+        severity: "error",
+        entityId: ocurrenciaId,
+      });
+    }
+
+    if (!state.pares[ocurrencia.par_id]) {
+      agregarError(errors, {
+        field: `ocurrencias.${ocurrenciaId}.par_id`,
+        message: `La ocurrencia "${ocurrenciaId}" apunta al par inexistente "${ocurrencia.par_id}".`,
+        severity: "error",
+        entityId: ocurrenciaId,
+      });
+    }
+
+    if (
+      typeof ocurrencia.atributos_visuales.x !== "number" ||
+      Number.isNaN(ocurrencia.atributos_visuales.x)
+    ) {
+      agregarError(errors, {
+        field: `ocurrencias.${ocurrenciaId}.atributos_visuales.x`,
+        message: `La coordenada x de la ocurrencia "${ocurrenciaId}" debe ser numérica.`,
+        severity: "error",
+        entityId: ocurrenciaId,
+      });
+    }
+
+    if (
+      typeof ocurrencia.atributos_visuales.y !== "number" ||
+      Number.isNaN(ocurrencia.atributos_visuales.y)
+    ) {
+      agregarError(errors, {
+        field: `ocurrencias.${ocurrenciaId}.atributos_visuales.y`,
+        message: `La coordenada y de la ocurrencia "${ocurrenciaId}" debe ser numérica.`,
+        severity: "error",
+        entityId: ocurrenciaId,
+      });
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// Pares
+// ─────────────────────────────────────────────
+
+function validarPares(
+  state: EditorState,
+  errors: EditorValidationError[],
+): void {
+  for (const [parId, par] of Object.entries(state.pares)) {
+    if (par.id !== parId) {
+      agregarError(errors, {
+        field: `pares.${parId}.id`,
+        message: `El par está indexado como "${parId}", pero su id interno es "${par.id}".`,
+        severity: "error",
+        entityId: parId,
+      });
+    }
+
+    const ocurrenciasSinDuplicados = new Set(par.ocurrencias);
+
+    if (ocurrenciasSinDuplicados.size !== par.ocurrencias.length) {
+      agregarError(errors, {
+        field: `pares.${parId}.ocurrencias`,
+        message: `El par "${parId}" tiene ocurrencias repetidas.`,
+        severity: "warning",
+        entityId: parId,
+      });
+    }
+
+    for (const ocurrenciaId of par.ocurrencias) {
+      const ocurrencia = state.ocurrencias[ocurrenciaId];
+
+      if (!ocurrencia) {
+        agregarError(errors, {
+          field: `pares.${parId}.ocurrencias`,
+          message: `El par "${parId}" referencia la ocurrencia inexistente "${ocurrenciaId}".`,
+          severity: "error",
+          entityId: parId,
+        });
+
+        continue;
+      }
+
+      if (ocurrencia.par_id !== parId) {
+        agregarError(errors, {
+          field: `pares.${parId}.ocurrencias`,
+          message: `El par "${parId}" contiene "${ocurrenciaId}", pero esa ocurrencia declara pertenecer a "${ocurrencia.par_id}".`,
+          severity: "error",
+          entityId: parId,
+        });
+      }
+    }
+
+    /**
+     * El profesor mencionó "cajas de pares". Por eso avisamos cuando un par
+     * no tiene exactamente dos ocurrencias.
+     *
+     * Se deja como warning, no como error, porque puede que el alcance cambie
+     * y se permitan cajas con una o más ocurrencias.
+     */
+    if (par.ocurrencias.length !== 2) {
+      agregarError(errors, {
+        field: `pares.${parId}.ocurrencias`,
+        message: `El par "${parId}" tiene ${par.ocurrencias.length} ocurrencia(s). Un par normalmente debería tener 2.`,
+        severity: "warning",
+        entityId: parId,
+      });
+    }
+
+    if (
+      typeof par.atributos_visuales.x !== "number" ||
+      Number.isNaN(par.atributos_visuales.x)
+    ) {
+      agregarError(errors, {
+        field: `pares.${parId}.atributos_visuales.x`,
+        message: `La coordenada x del par "${parId}" debe ser numérica.`,
+        severity: "error",
+        entityId: parId,
+      });
+    }
+
+    if (
+      typeof par.atributos_visuales.y !== "number" ||
+      Number.isNaN(par.atributos_visuales.y)
+    ) {
+      agregarError(errors, {
+        field: `pares.${parId}.atributos_visuales.y`,
+        message: `La coordenada y del par "${parId}" debe ser numérica.`,
+        severity: "error",
+        entityId: parId,
+      });
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// Arcos
+// ─────────────────────────────────────────────
+
+function validarArcos(
+  state: EditorState,
+  errors: EditorValidationError[],
+): void {
+  for (const [arcoId, arco] of Object.entries(state.arcos)) {
+    if (arco.id !== arcoId) {
+      agregarError(errors, {
+        field: `arcos.${arcoId}.id`,
+        message: `El arco está indexado como "${arcoId}", pero su id interno es "${arco.id}".`,
+        severity: "error",
+        entityId: arcoId,
+      });
+    }
+
+    const origenOcurrencia = state.ocurrencias[arco.origen_ocurrencia];
+    const destinoOcurrencia = state.ocurrencias[arco.destino_ocurrencia];
+
+    if (!origenOcurrencia) {
+      agregarError(errors, {
+        field: `arcos.${arcoId}.origen_ocurrencia`,
+        message: `El arco "${arcoId}" apunta a la ocurrencia origen inexistente "${arco.origen_ocurrencia}".`,
+        severity: "error",
+        entityId: arcoId,
+      });
+    }
+
+    if (!destinoOcurrencia) {
+      agregarError(errors, {
+        field: `arcos.${arcoId}.destino_ocurrencia`,
+        message: `El arco "${arcoId}" apunta a la ocurrencia destino inexistente "${arco.destino_ocurrencia}".`,
+        severity: "error",
+        entityId: arcoId,
+      });
+    }
+
+    if (!state.variables[arco.origen_variable]) {
+      agregarError(errors, {
+        field: `arcos.${arcoId}.origen_variable`,
+        message: `El arco "${arcoId}" apunta a la variable origen inexistente "${arco.origen_variable}".`,
+        severity: "error",
+        entityId: arcoId,
+      });
+    }
+
+    if (!state.variables[arco.destino_variable]) {
+      agregarError(errors, {
+        field: `arcos.${arcoId}.destino_variable`,
+        message: `El arco "${arcoId}" apunta a la variable destino inexistente "${arco.destino_variable}".`,
+        severity: "error",
+        entityId: arcoId,
+      });
+    }
+
+    if (
+      origenOcurrencia &&
+      arco.origen_variable !== origenOcurrencia.variable_id
+    ) {
+      agregarError(errors, {
+        field: `arcos.${arcoId}.origen_variable`,
+        message: `El arco "${arcoId}" declara origen_variable="${arco.origen_variable}", pero "${arco.origen_ocurrencia}" representa a "${origenOcurrencia.variable_id}".`,
+        severity: "error",
+        entityId: arcoId,
+      });
+    }
+
+    if (
+      destinoOcurrencia &&
+      arco.destino_variable !== destinoOcurrencia.variable_id
+    ) {
+      agregarError(errors, {
+        field: `arcos.${arcoId}.destino_variable`,
+        message: `El arco "${arcoId}" declara destino_variable="${arco.destino_variable}", pero "${arco.destino_ocurrencia}" representa a "${destinoOcurrencia.variable_id}".`,
+        severity: "error",
+        entityId: arcoId,
+      });
+    }
+
+    if (!esConectivoValido(arco.conectivo, state.conectivosDisponibles)) {
+      agregarError(errors, {
+        field: `arcos.${arcoId}.conectivo`,
+        message: `El arco "${arcoId}" usa el conectivo inválido "${arco.conectivo}".`,
+        severity: "error",
+        entityId: arcoId,
+      });
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
+// Configuración
+// ─────────────────────────────────────────────
+
+function validarMaxIteraciones(
+  state: EditorState,
+  errors: EditorValidationError[],
+): void {
+  if (
+    !Number.isInteger(state.maxIteraciones) ||
+    state.maxIteraciones < 1 ||
+    state.maxIteraciones > 500
+  ) {
+    agregarError(errors, {
+      field: "maxIteraciones",
+      message: "maxIteraciones debe ser un entero entre 1 y 500.",
+      severity: "error",
+    });
+  }
 }

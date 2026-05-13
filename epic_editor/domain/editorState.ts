@@ -3,30 +3,54 @@
  * ──────────────────────────────────────────────────────────────────────────
  * Estado interno del Editor EPiC Playground.
  *
- * Este módulo define la forma del estado que el Editor mantiene en memoria.
- * No es el MotorInput; es la representación de trabajo del Editor.
+ * Este módulo define la forma del estado editable que el Editor mantiene
+ * en memoria.
  *
- * Responsabilidad:
- *   Mantener la estructura editable de elementos, conjuntos y arcos
- *   internos, junto con el modo actual (edición / ejecución).
+ * Cambio principal del modelo:
  *
- * Lo que este módulo NO hace:
- *   - No calcula propagaciones.
- *   - No renderiza en canvas/SVG/D3.
- *   - No aplica conectivos lógicos.
- *   - No estabiliza el sistema.
+ *   Antes:
+ *     - elementos
+ *     - conjuntos
+ *     - arcos
  *
- * Relación con el Motor:
- *   El EditorState se convierte en MotorInput mediante el adaptador
- *   editorToMotorInput.ts antes de enviarlo a POST /calcular.
+ *   Ahora:
+ *     - variables
+ *     - ocurrencias
+ *     - pares
+ *     - arcos
+ *
+ * Motivo:
+ *   El profesor pidió que una misma variable pueda aparecer varias veces
+ *   en diferentes cajas/pares y que todas las apariciones con el mismo
+ *   nombre compartan las mismas bolitas/evidencias.
+ *
+ * Por eso el estado separa:
+ *
+ *   VariableLogica:
+ *     La variable real, por ejemplo "p".
+ *
+ *   OcurrenciaVisual:
+ *     Una aparición visual de esa variable, por ejemplo "occ_1".
+ *
+ *   ParVisual:
+ *     Una caja/par donde aparecen ocurrencias.
+ *
+ *   EditorArc:
+ *     Una relación dirigida entre ocurrencias y variables.
+ *
+ * Este módulo NO calcula propagaciones.
+ * Este módulo NO renderiza en canvas/SVG/D3.
+ * Este módulo NO interpreta el resultado final del Motor.
  * ──────────────────────────────────────────────────────────────────────────
  */
 
 import type {
-  ElementoIn,
-  ConjuntoIn,
+  VariableLogica,
+  OcurrenciaVisual,
+  ParVisual,
   EditorArc,
   MotorOutput,
+  MotorConnective,
 } from "./editorTypes";
 
 // ─────────────────────────────────────────────
@@ -35,11 +59,14 @@ import type {
 
 /**
  * El Editor puede estar en dos modos:
- *   "edicion"  → el usuario puede crear/modificar/eliminar entidades.
- *   "ejecucion" → el sistema envió el payload al Motor y espera o ya recibió resultado.
  *
- * La transición entre modos es responsabilidad del EditorController.
- * El Simulador consume el resultado una vez que el Motor ha estabilizado.
+ *   "edicion":
+ *     El usuario puede crear, modificar o eliminar entidades.
+ *
+ *   "ejecucion":
+ *     El dominio ya fue enviado, o está listo para enviarse, al Motor.
+ *
+ * El Editor coordina el paso entre edición y ejecución, pero no calcula.
  */
 export type EditorMode = "edicion" | "ejecucion";
 
@@ -48,31 +75,62 @@ export type EditorMode = "edicion" | "ejecucion";
 // ─────────────────────────────────────────────
 
 /**
- * EditorState — fuente de verdad del módulo Editor.
+ * EditorState
+ * ─────────────────────────────────────────────
+ * Fuente de verdad del módulo Editor.
  *
- * Contiene:
- *   - elementos: nodos/proposiciones que el usuario ha creado.
- *   - conjuntos: agrupaciones/contextos de propagación.
- *   - arcos: relaciones dirigidas internas (opcionales; no se envían al Motor directamente).
- *   - modo: estado operacional actual del Editor.
- *   - motorOutput: última respuesta del Motor (null si no se ha ejecutado).
- *   - conectivosDisponibles: lista cargada desde GET /conectivos.
- *   - maxIteraciones: configuración que se pasa al Motor.
+ * Contiene el estado editable antes de generar el JSON final para el Motor.
+ *
+ * variables:
+ *   Diccionario de variables lógicas reales.
+ *   Ejemplo:
+ *     variables["p"] = variable lógica p.
+ *
+ * ocurrencias:
+ *   Diccionario de apariciones visuales.
+ *   Ejemplo:
+ *     ocurrencias["occ_1"] representa a la variable "p".
+ *
+ * pares:
+ *   Diccionario de cajas/pares.
+ *   Ejemplo:
+ *     pares["par_1"] contiene ["occ_1", "occ_2"].
+ *
+ * arcos:
+ *   Diccionario de relaciones dirigidas.
+ *   Ejemplo:
+ *     arcos["a1"] conecta occ_1 → occ_2.
+ *
+ * modo:
+ *   Estado operativo del Editor.
+ *
+ * motorOutput:
+ *   Última respuesta del Motor.
+ *
+ * conectivosDisponibles:
+ *   Lista de conectivos que puede usar el Editor.
+ *
+ * maxIteraciones:
+ *   Se conserva como configuración útil, aunque el nuevo contrato del Editor
+ *   ya no lo coloca en la raíz del JSON. Si el Motor nuevo lo necesita, se
+ *   puede agregar después en una sección de configuración.
  */
 export interface EditorState {
-  elementos: Record<string, ElementoIn>;   // Indexado por id para O(1)
-  conjuntos: Record<string, ConjuntoIn>;   // Indexado por id para O(1)
-  /**
-   * Arcos dirigidos internos.
-   * Son opcionales: si el equipo decide no usarlos, este campo
-   * puede vaciarse sin afectar la compatibilidad con el Motor.
-   * El adaptador editorToMotorInput.ts es el único que los lee
-   * para traducirlos a ConjuntoIn si es necesario.
-   */
+  variables: Record<string, VariableLogica>;
+  ocurrencias: Record<string, OcurrenciaVisual>;
+  pares: Record<string, ParVisual>;
   arcos: Record<string, EditorArc>;
+
   modo: EditorMode;
   motorOutput: MotorOutput | null;
-  conectivosDisponibles: string[];
+
+  conectivosDisponibles: MotorConnective[];
+
+  /**
+   * Configuración opcional conservada para compatibilidad conceptual.
+   * Si el equipo del Motor decide usarla, se puede incluir después en
+   * MotorInputV2.configuracion.
+   */
   maxIteraciones: number;
 }
 
@@ -81,21 +139,33 @@ export interface EditorState {
 // ─────────────────────────────────────────────
 
 /**
- * Estado inicial vacío del Editor.
- * Se usa al instanciar el módulo por primera vez.
+ * createInitialState
+ * ─────────────────────────────────────────────
+ * Crea el estado inicial vacío del Editor.
+ *
+ * Al inicio no hay variables, ocurrencias, pares ni arcos.
+ * El Editor inicia en modo "edicion".
  */
 export function createInitialState(): EditorState {
   return {
-    elementos: {},
-    conjuntos: {},
+    variables: {},
+    ocurrencias: {},
+    pares: {},
     arcos: {},
+
     modo: "edicion",
     motorOutput: null,
-    // Fallback estático; se sobreescribe al cargar desde GET /conectivos
+
     conectivosDisponibles: [
-      "AND", "OR", "IMPLIES", "BICONDITIONAL",
-      "PROPAGATION", "CONTRAPOSITIONAL", "KJOIN",
+      "AND",
+      "OR",
+      "IMPLIES",
+      "BICONDITIONAL",
+      "PROPAGATION",
+      "CONTRAPOSITIONAL",
+      "KJOIN",
     ],
+
     maxIteraciones: 100,
   };
 }
