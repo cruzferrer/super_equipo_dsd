@@ -1,696 +1,293 @@
-/**
- * editorActions.ts
- * ──────────────────────────────────────────────────────────────────────────
- * Acciones puras del Editor EPiC Playground.
- *
- * Este archivo contiene funciones que reciben un EditorState y devuelven
- * un nuevo EditorState modificado.
- *
- * No muta el estado original.
- * No calcula propagaciones.
- * No renderiza.
- * No llama al Motor.
- *
- * Cambio principal del modelo:
- *
- * Antes:
- *   elementos / conjuntos / arcos
- *
- * Ahora:
- *   variables / ocurrencias / pares / arcos
- *
- * Regla central:
- *   Las evidencias viven en la VariableLogica.
- *   Las ocurrencias solo apuntan a una variable mediante variable_id.
- *
- * Por lo tanto, si una bolita se coloca sobre una ocurrencia de "p",
- * realmente se actualiza la variable lógica "p". Todas las ocurrencias
- * con variable_id = "p" quedan sincronizadas automáticamente.
- * ──────────────────────────────────────────────────────────────────────────
- */
-
-import type { EditorState, EditorMode } from "./editorState";
+import type { EditorState } from "./editorState";
 import type {
-  VariableLogica,
-  OcurrenciaVisual,
-  ParVisual,
-  EditorArc,
-  Evidencia,
   BelnapValue,
   MotorConnective,
-  MotorOutput,
+  ExecutionTrace,
 } from "./editorTypes";
-import { evidenciasToBelnap } from "./editorTypes";
 
-// ─────────────────────────────────────────────
-// Utilidades internas
-// ─────────────────────────────────────────────
-
-/**
- * normalizarEvidencias
- * ─────────────────────────────────────────────
- * Elimina evidencias repetidas y conserva solo las permitidas.
- *
- * Ejemplo:
- *   ["verde", "verde", "roja"] → ["verde", "roja"]
- */
-function normalizarEvidencias(evidencias: Evidencia[]): Evidencia[] {
-  const resultado: Evidencia[] = [];
-
-  if (evidencias.includes("verde")) {
-    resultado.push("verde");
-  }
-
-  if (evidencias.includes("roja")) {
-    resultado.push("roja");
-  }
-
-  return resultado;
-}
-
-/**
- * actualizarVariableConEvidencias
- * ─────────────────────────────────────────────
- * Regresa una copia de la variable con evidencias normalizadas y
- * valor_actual sincronizado.
- */
-function actualizarVariableConEvidencias(
-  variable: VariableLogica,
-  evidencias: Evidencia[],
-): VariableLogica {
-  const evidenciasNormalizadas = normalizarEvidencias(evidencias);
-
-  return {
-    ...variable,
-    evidencias: evidenciasNormalizadas,
-    valor_actual: evidenciasToBelnap(evidenciasNormalizadas),
-  };
-}
-
-// ─────────────────────────────────────────────
-// Acciones de modo / resultado
-// ─────────────────────────────────────────────
-
-/**
- * Cambia el modo del Editor.
- */
-export function setModo(state: EditorState, modo: EditorMode): EditorState {
-  return {
-    ...state,
-    modo,
-  };
-}
-
-/**
- * Guarda la última salida recibida del Motor.
- */
-export function setMotorOutput(
+export function crearVariableLogica(
   state: EditorState,
-  motorOutput: MotorOutput | null,
+  id: string,
+  truth_value: BelnapValue = "N",
 ): EditorState {
-  return {
-    ...state,
-    motorOutput,
-  };
-}
-
-/**
- * Actualiza la lista de conectivos disponibles.
- */
-export function setConectivosDisponibles(
-  state: EditorState,
-  conectivosDisponibles: MotorConnective[],
-): EditorState {
-  return {
-    ...state,
-    conectivosDisponibles,
-  };
-}
-
-/**
- * Actualiza maxIteraciones en el estado.
- *
- * Aunque el nuevo JSON no lo usa directamente en la raíz, lo conservamos
- * como configuración del Editor por si el Motor nuevo decide consumirlo.
- */
-export function setMaxIteraciones(
-  state: EditorState,
-  maxIteraciones: number,
-): EditorState {
-  return {
-    ...state,
-    maxIteraciones,
-  };
-}
-
-// ─────────────────────────────────────────────
-// Acciones sobre variables lógicas
-// ─────────────────────────────────────────────
-
-/**
- * Crea una variable lógica.
- *
- * Si no se especifica valor/evidencia, inicia sin evidencia:
- *   valor_actual = "N"
- *   evidencias = []
- */
-export function crearVariable(
-  state: EditorState,
-  variable: {
-    id: string;
-    valor_actual?: BelnapValue;
-    evidencias?: Evidencia[];
-    alias?: string | null;
-  },
-): EditorState {
-  const evidencias = normalizarEvidencias(variable.evidencias ?? []);
-  const valorActual = variable.valor_actual ?? evidenciasToBelnap(evidencias);
-
-  const nuevaVariable: VariableLogica = {
-    id: variable.id,
-    valor_actual: valorActual,
-    evidencias,
-    alias: variable.alias ?? null,
-  };
+  if (state.snapshot.logic.variables.some((v) => v.id === id)) return state;
 
   return {
     ...state,
-    variables: {
-      ...state.variables,
-      [nuevaVariable.id]: nuevaVariable,
-    },
-  };
-}
-
-/**
- * Edita parcialmente una variable lógica.
- *
- * Si se actualizan evidencias, el valor_actual se recalcula automáticamente.
- * Si solo se actualiza valor_actual, se respeta ese valor.
- */
-export function editarVariable(
-  state: EditorState,
-  variableId: string,
-  cambios: Partial<Omit<VariableLogica, "id">>,
-): EditorState {
-  const variableActual = state.variables[variableId];
-
-  if (!variableActual) {
-    return state;
-  }
-
-  let variableActualizada: VariableLogica = {
-    ...variableActual,
-    ...cambios,
-  };
-
-  if (cambios.evidencias) {
-    variableActualizada = actualizarVariableConEvidencias(
-      variableActualizada,
-      cambios.evidencias,
-    );
-  }
-
-  return {
-    ...state,
-    variables: {
-      ...state.variables,
-      [variableId]: variableActualizada,
-    },
-  };
-}
-
-/**
- * Elimina una variable lógica.
- *
- * También elimina:
- *   - ocurrencias que apuntan a esa variable;
- *   - referencias a esas ocurrencias dentro de pares;
- *   - arcos que usen esa variable como origen o destino.
- */
-export function eliminarVariable(
-  state: EditorState,
-  variableId: string,
-): EditorState {
-  const nuevasVariables = { ...state.variables };
-  delete nuevasVariables[variableId];
-
-  const ocurrenciasEliminadas = new Set<string>();
-
-  const nuevasOcurrencias = Object.fromEntries(
-    Object.entries(state.ocurrencias).filter(([ocurrenciaId, ocurrencia]) => {
-      const conservar = ocurrencia.variable_id !== variableId;
-
-      if (!conservar) {
-        ocurrenciasEliminadas.add(ocurrenciaId);
-      }
-
-      return conservar;
-    }),
-  );
-
-  const nuevosPares = Object.fromEntries(
-    Object.entries(state.pares).map(([parId, par]) => [
-      parId,
-      {
-        ...par,
-        ocurrencias: par.ocurrencias.filter(
-          (ocurrenciaId) => !ocurrenciasEliminadas.has(ocurrenciaId),
-        ),
-      },
-    ]),
-  );
-
-  const nuevosArcos = Object.fromEntries(
-    Object.entries(state.arcos).filter(([, arco]) => {
-      const usaVariable =
-        arco.origen_variable === variableId || arco.destino_variable === variableId;
-
-      const usaOcurrenciaEliminada =
-        ocurrenciasEliminadas.has(arco.origen_ocurrencia) ||
-        ocurrenciasEliminadas.has(arco.destino_ocurrencia);
-
-      return !usaVariable && !usaOcurrenciaEliminada;
-    }),
-  );
-
-  return {
-    ...state,
-    variables: nuevasVariables,
-    ocurrencias: nuevasOcurrencias,
-    pares: nuevosPares,
-    arcos: nuevosArcos,
-  };
-}
-
-/**
- * Agrega una evidencia a una variable lógica.
- *
- * Ejemplo:
- *   agregarEvidenciaAVariable(p, "verde")
- *   p.evidencias = ["verde"]
- *   p.valor_actual = "V"
- */
-export function agregarEvidenciaAVariable(
-  state: EditorState,
-  variableId: string,
-  evidencia: Evidencia,
-): EditorState {
-  const variable = state.variables[variableId];
-
-  if (!variable) {
-    return state;
-  }
-
-  const evidencias = normalizarEvidencias([...variable.evidencias, evidencia]);
-
-  return editarVariable(state, variableId, {
-    evidencias,
-  });
-}
-
-/**
- * Quita una evidencia de una variable lógica.
- */
-export function quitarEvidenciaAVariable(
-  state: EditorState,
-  variableId: string,
-  evidencia: Evidencia,
-): EditorState {
-  const variable = state.variables[variableId];
-
-  if (!variable) {
-    return state;
-  }
-
-  const evidencias = variable.evidencias.filter((item) => item !== evidencia);
-
-  return editarVariable(state, variableId, {
-    evidencias,
-  });
-}
-
-/**
- * Coloca una evidencia sobre una ocurrencia visual.
- *
- * Esta función resuelve la regla del profesor:
- *
- *   Si pongo una bolita sobre una aparición de "p",
- *   realmente se actualiza la variable lógica "p".
- *
- * Como todas las ocurrencias de "p" apuntan a la misma VariableLogica,
- * todas quedan sincronizadas automáticamente.
- */
-export function agregarEvidenciaAOcurrencia(
-  state: EditorState,
-  ocurrenciaId: string,
-  evidencia: Evidencia,
-): EditorState {
-  const ocurrencia = state.ocurrencias[ocurrenciaId];
-
-  if (!ocurrencia) {
-    return state;
-  }
-
-  return agregarEvidenciaAVariable(state, ocurrencia.variable_id, evidencia);
-}
-
-/**
- * Quita una evidencia desde una ocurrencia visual.
- *
- * Igual que agregarEvidenciaAOcurrencia, la modificación real ocurre sobre
- * la variable lógica asociada.
- */
-export function quitarEvidenciaAOcurrencia(
-  state: EditorState,
-  ocurrenciaId: string,
-  evidencia: Evidencia,
-): EditorState {
-  const ocurrencia = state.ocurrencias[ocurrenciaId];
-
-  if (!ocurrencia) {
-    return state;
-  }
-
-  return quitarEvidenciaAVariable(state, ocurrencia.variable_id, evidencia);
-}
-
-// ─────────────────────────────────────────────
-// Acciones sobre ocurrencias visuales
-// ─────────────────────────────────────────────
-
-/**
- * Crea una ocurrencia visual.
- *
- * La ocurrencia debe apuntar a una variable lógica mediante variable_id.
- * La validación formal de existencia se hace en editorValidation.ts.
- */
-export function crearOcurrencia(
-  state: EditorState,
-  ocurrencia: OcurrenciaVisual,
-): EditorState {
-  return {
-    ...state,
-    ocurrencias: {
-      ...state.ocurrencias,
-      [ocurrencia.id]: ocurrencia,
-    },
-  };
-}
-
-/**
- * Edita parcialmente una ocurrencia visual.
- */
-export function editarOcurrencia(
-  state: EditorState,
-  ocurrenciaId: string,
-  cambios: Partial<Omit<OcurrenciaVisual, "id">>,
-): EditorState {
-  const ocurrenciaActual = state.ocurrencias[ocurrenciaId];
-
-  if (!ocurrenciaActual) {
-    return state;
-  }
-
-  return {
-    ...state,
-    ocurrencias: {
-      ...state.ocurrencias,
-      [ocurrenciaId]: {
-        ...ocurrenciaActual,
-        ...cambios,
+    snapshot: {
+      ...state.snapshot,
+      logic: {
+        ...state.snapshot.logic,
+        variables: [
+          ...state.snapshot.logic.variables,
+          { id, truth_value, memberships: [] },
+        ],
       },
     },
   };
 }
 
-/**
- * Elimina una ocurrencia visual.
- *
- * También:
- *   - la quita de cualquier par que la contenga;
- *   - elimina arcos que la usen como origen o destino.
- */
-export function eliminarOcurrencia(
+export function eliminarVariableLogica(
   state: EditorState,
-  ocurrenciaId: string,
+  id: string,
 ): EditorState {
-  const nuevasOcurrencias = { ...state.ocurrencias };
-  delete nuevasOcurrencias[ocurrenciaId];
-
-  const nuevosPares = Object.fromEntries(
-    Object.entries(state.pares).map(([parId, par]) => [
-      parId,
-      {
-        ...par,
-        ocurrencias: par.ocurrencias.filter((id) => id !== ocurrenciaId),
-      },
-    ]),
+  const variables = state.snapshot.logic.variables.filter((v) => v.id !== id);
+  const relations = state.snapshot.logic.relations.filter(
+    (r) => r.from_variable !== id && r.to_variable !== id,
   );
 
-  const nuevosArcos = Object.fromEntries(
-    Object.entries(state.arcos).filter(([, arco]) => {
-      return (
-        arco.origen_ocurrencia !== ocurrenciaId &&
-        arco.destino_ocurrencia !== ocurrenciaId
-      );
-    }),
-  );
-
-  return {
-    ...state,
-    ocurrencias: nuevasOcurrencias,
-    pares: nuevosPares,
-    arcos: nuevosArcos,
-  };
-}
-
-/**
- * Actualiza la posición visual de una ocurrencia.
- */
-export function moverOcurrencia(
-  state: EditorState,
-  ocurrenciaId: string,
-  posicion: { x: number; y: number },
-): EditorState {
-  const ocurrencia = state.ocurrencias[ocurrenciaId];
-
-  if (!ocurrencia) {
-    return state;
+  const instances = { ...state.snapshot.visual.instances };
+  for (const key of Object.keys(instances)) {
+    if (instances[key].variable_id === id) {
+      delete instances[key];
+    }
   }
 
-  return editarOcurrencia(state, ocurrenciaId, {
-    atributos_visuales: {
-      ...ocurrencia.atributos_visuales,
-      ...posicion,
-    },
-  });
-}
-
-// ─────────────────────────────────────────────
-// Acciones sobre pares/cajas
-// ─────────────────────────────────────────────
-
-/**
- * Crea un par/caja.
- */
-export function crearPar(state: EditorState, par: ParVisual): EditorState {
-  return {
-    ...state,
-    pares: {
-      ...state.pares,
-      [par.id]: par,
-    },
-  };
-}
-
-/**
- * Edita parcialmente un par/caja.
- */
-export function editarPar(
-  state: EditorState,
-  parId: string,
-  cambios: Partial<Omit<ParVisual, "id">>,
-): EditorState {
-  const parActual = state.pares[parId];
-
-  if (!parActual) {
-    return state;
+  const visualRelations = { ...state.snapshot.visual.relations };
+  for (const r of state.snapshot.logic.relations) {
+    if (
+      (r.from_variable === id || r.to_variable === id) &&
+      visualRelations[r.id]
+    ) {
+      delete visualRelations[r.id];
+    }
   }
 
   return {
     ...state,
-    pares: {
-      ...state.pares,
-      [parId]: {
-        ...parActual,
-        ...cambios,
+    snapshot: {
+      ...state.snapshot,
+      logic: { ...state.snapshot.logic, variables, relations },
+      visual: {
+        ...state.snapshot.visual,
+        instances,
+        relations: visualRelations,
       },
     },
   };
 }
 
-/**
- * Elimina un par/caja.
- *
- * También elimina:
- *   - ocurrencias que pertenecen a ese par;
- *   - arcos asociados a esas ocurrencias.
- */
-export function eliminarPar(state: EditorState, parId: string): EditorState {
-  const par = state.pares[parId];
-
-  if (!par) {
+export function crearInstanciaVisual(
+  state: EditorState,
+  instance_id: string,
+  variable_id: string,
+  x: number,
+  y: number,
+): EditorState {
+  if (!state.snapshot.logic.variables.some((v) => v.id === variable_id))
     return state;
-  }
-
-  const ocurrenciasDelPar = new Set(par.ocurrencias);
-
-  const nuevosPares = { ...state.pares };
-  delete nuevosPares[parId];
-
-  const nuevasOcurrencias = Object.fromEntries(
-    Object.entries(state.ocurrencias).filter(
-      ([ocurrenciaId]) => !ocurrenciasDelPar.has(ocurrenciaId),
-    ),
-  );
-
-  const nuevosArcos = Object.fromEntries(
-    Object.entries(state.arcos).filter(([, arco]) => {
-      return (
-        !ocurrenciasDelPar.has(arco.origen_ocurrencia) &&
-        !ocurrenciasDelPar.has(arco.destino_ocurrencia)
-      );
-    }),
-  );
 
   return {
     ...state,
-    pares: nuevosPares,
-    ocurrencias: nuevasOcurrencias,
-    arcos: nuevosArcos,
-  };
-}
-
-/**
- * Agrega una ocurrencia existente a un par existente.
- */
-export function agregarOcurrenciaAPar(
-  state: EditorState,
-  parId: string,
-  ocurrenciaId: string,
-): EditorState {
-  const par = state.pares[parId];
-
-  if (!par) {
-    return state;
-  }
-
-  if (par.ocurrencias.includes(ocurrenciaId)) {
-    return state;
-  }
-
-  return editarPar(state, parId, {
-    ocurrencias: [...par.ocurrencias, ocurrenciaId],
-  });
-}
-
-/**
- * Quita una ocurrencia de un par.
- */
-export function quitarOcurrenciaDePar(
-  state: EditorState,
-  parId: string,
-  ocurrenciaId: string,
-): EditorState {
-  const par = state.pares[parId];
-
-  if (!par) {
-    return state;
-  }
-
-  return editarPar(state, parId, {
-    ocurrencias: par.ocurrencias.filter((id) => id !== ocurrenciaId),
-  });
-}
-
-/**
- * Actualiza la posición visual de un par.
- */
-export function moverPar(
-  state: EditorState,
-  parId: string,
-  posicion: { x: number; y: number },
-): EditorState {
-  const par = state.pares[parId];
-
-  if (!par) {
-    return state;
-  }
-
-  return editarPar(state, parId, {
-    atributos_visuales: {
-      ...par.atributos_visuales,
-      ...posicion,
-    },
-  });
-}
-
-// ─────────────────────────────────────────────
-// Acciones sobre arcos dirigidos
-// ─────────────────────────────────────────────
-
-/**
- * Crea un arco dirigido.
- *
- * La validación de que las ocurrencias y variables existan se hace en
- * editorValidation.ts.
- */
-export function crearArco(state: EditorState, arco: EditorArc): EditorState {
-  return {
-    ...state,
-    arcos: {
-      ...state.arcos,
-      [arco.id]: arco,
-    },
-  };
-}
-
-/**
- * Edita parcialmente un arco.
- */
-export function editarArco(
-  state: EditorState,
-  arcoId: string,
-  cambios: Partial<Omit<EditorArc, "id">>,
-): EditorState {
-  const arcoActual = state.arcos[arcoId];
-
-  if (!arcoActual) {
-    return state;
-  }
-
-  return {
-    ...state,
-    arcos: {
-      ...state.arcos,
-      [arcoId]: {
-        ...arcoActual,
-        ...cambios,
+    snapshot: {
+      ...state.snapshot,
+      visual: {
+        ...state.snapshot.visual,
+        instances: {
+          ...state.snapshot.visual.instances,
+          [instance_id]: { id: instance_id, variable_id, x, y },
+        },
       },
     },
   };
 }
 
-/**
- * Elimina un arco.
- */
-export function eliminarArco(state: EditorState, arcoId: string): EditorState {
-  const nuevosArcos = { ...state.arcos };
-  delete nuevosArcos[arcoId];
+export function eliminarInstanciaVisual(
+  state: EditorState,
+  instance_id: string,
+): EditorState {
+  const instances = { ...state.snapshot.visual.instances };
+  delete instances[instance_id];
 
   return {
     ...state,
-    arcos: nuevosArcos,
+    snapshot: {
+      ...state.snapshot,
+      visual: { ...state.snapshot.visual, instances },
+    },
+  };
+}
+
+export function crearContexto(
+  state: EditorState,
+  id: string,
+  connective: MotorConnective,
+  x: number,
+  y: number,
+  radius: number = 100,
+  shape: string = "ellipse",
+): EditorState {
+  if (state.snapshot.logic.sets.some((s) => s.id === id)) return state;
+
+  return {
+    ...state,
+    snapshot: {
+      ...state.snapshot,
+      logic: {
+        ...state.snapshot.logic,
+        sets: [
+          ...state.snapshot.logic.sets,
+          { id, connective, subsets: [], result_alias: null },
+        ],
+      },
+      visual: {
+        ...state.snapshot.visual,
+        sets: {
+          ...state.snapshot.visual.sets,
+          [id]: { x, y, radius, shape },
+        },
+      },
+    },
+  };
+}
+
+export function eliminarContexto(state: EditorState, id: string): EditorState {
+  const sets = state.snapshot.logic.sets.filter((s) => s.id !== id);
+
+  const setsCleaned = sets.map((s) => ({
+    ...s,
+    subsets: s.subsets.filter((sub) => sub !== id),
+  }));
+
+  const variables = state.snapshot.logic.variables.map((v) => ({
+    ...v,
+    memberships: v.memberships.filter((m) => m !== id),
+  }));
+
+  const visualSets = { ...state.snapshot.visual.sets };
+  delete visualSets[id];
+
+  return {
+    ...state,
+    snapshot: {
+      ...state.snapshot,
+      logic: { ...state.snapshot.logic, sets: setsCleaned, variables },
+      visual: { ...state.snapshot.visual, sets: visualSets },
+    },
+  };
+}
+
+export function crearRelacion(
+  state: EditorState,
+  id: string,
+  from_variable: string,
+  to_variable: string,
+  connective: MotorConnective,
+  color: string = "#000000",
+  thickness: number = 2,
+): EditorState {
+  if (state.snapshot.logic.relations.some((r) => r.id === id)) return state;
+
+  return {
+    ...state,
+    snapshot: {
+      ...state.snapshot,
+      logic: {
+        ...state.snapshot.logic,
+        relations: [
+          ...state.snapshot.logic.relations,
+          { id, from_variable, to_variable, connective },
+        ],
+      },
+      visual: {
+        ...state.snapshot.visual,
+        relations: {
+          ...state.snapshot.visual.relations,
+          [id]: { color, thickness },
+        },
+      },
+    },
+  };
+}
+
+export function eliminarRelacion(state: EditorState, id: string): EditorState {
+  const relations = state.snapshot.logic.relations.filter((r) => r.id !== id);
+  const visualRelations = { ...state.snapshot.visual.relations };
+  delete visualRelations[id];
+
+  return {
+    ...state,
+    snapshot: {
+      ...state.snapshot,
+      logic: { ...state.snapshot.logic, relations },
+      visual: { ...state.snapshot.visual, relations: visualRelations },
+    },
+  };
+}
+
+export function asignarVariableAContexto(
+  state: EditorState,
+  variable_id: string,
+  set_id: string,
+): EditorState {
+  const variables = state.snapshot.logic.variables.map((v) => {
+    if (v.id === variable_id && !v.memberships.includes(set_id)) {
+      return { ...v, memberships: [...v.memberships, set_id] };
+    }
+    return v;
+  });
+
+  return {
+    ...state,
+    snapshot: {
+      ...state.snapshot,
+      logic: { ...state.snapshot.logic, variables },
+    },
+  };
+}
+
+export function quitarVariableDeContexto(
+  state: EditorState,
+  variable_id: string,
+  set_id: string,
+): EditorState {
+  const variables = state.snapshot.logic.variables.map((v) => {
+    if (v.id === variable_id) {
+      return { ...v, memberships: v.memberships.filter((m) => m !== set_id) };
+    }
+    return v;
+  });
+
+  return {
+    ...state,
+    snapshot: {
+      ...state.snapshot,
+      logic: { ...state.snapshot.logic, variables },
+    },
+  };
+}
+
+export function actualizarValorVerdad(
+  state: EditorState,
+  variable_id: string,
+  truth_value: BelnapValue,
+): EditorState {
+  const variables = state.snapshot.logic.variables.map((v) =>
+    v.id === variable_id ? { ...v, truth_value } : v,
+  );
+
+  return {
+    ...state,
+    snapshot: {
+      ...state.snapshot,
+      logic: { ...state.snapshot.logic, variables },
+    },
+  };
+}
+
+export function guardarResultadoEjecucion(
+  state: EditorState,
+  execution_trace: ExecutionTrace | undefined,
+): EditorState {
+  return {
+    ...state,
+    snapshot: {
+      ...state.snapshot,
+      meta: {
+        ...state.snapshot.meta,
+        editor_mode: execution_trace ? "ejecucion" : "edicion",
+      },
+      execution_trace,
+    },
   };
 }
