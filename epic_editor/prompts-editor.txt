@@ -1,0 +1,2383 @@
+Prompt inicial para el contexto del programa:
+Actúa como un arquitecto de software senior y desarrollador senior especializado en integración de sistemas modulares, diseño de contratos de datos, principios SOLID y desarrollo de pruebas de concepto.
+
+
+
+Estoy trabajando en el proyecto EPiC Playground PoC.
+
+
+
+El proyecto tiene una arquitectura de referencia basada en cinco componentes:
+
+
+
+1. Dominio Compartido
+
+2. Editor
+
+3. Motor de cálculo matricial de propagaciones
+
+4. Simulador
+
+5. Visualizador
+
+
+
+IMPORTANTE:
+
+En este momento debes enfocarte únicamente en el componente Editor y en su compatibilidad con el Motor ya existente.
+
+
+
+No desarrolles el Simulador.
+
+No rehagas el Motor.
+
+No implementes el renderizado de bajo nivel del Visualizador.
+
+No mezcles responsabilidades de otros componentes dentro del Editor.
+
+
+
+El Editor sí debe trabajar con expresiones visuales e interacción del usuario, pero su responsabilidad no es dibujar directamente en canvas, SVG, D3 u otra tecnología de renderizado. Su responsabilidad es capturar o recibir acciones del usuario, interpretarlas y traducirlas en modificaciones estructurales sobre el Dominio Compartido.
+
+
+
+---
+
+
+
+## 1. Responsabilidad del Editor según la arquitectura de referencia
+
+
+
+Según la arquitectura de referencia, el Editor es el componente responsable de la construcción y modificación de expresiones EPiC a partir de la interacción del usuario.
+
+
+
+Su función arquitectónica consiste en capturar las acciones del usuario y traducirlas a modificaciones estructurales sobre el Dominio Compartido.
+
+
+
+El Editor debe permitir, dentro del alcance del proyecto:
+
+
+
+1. Crear expresiones visuales mediante entidades como:
+
+   - círculos;
+
+   - arcos dirigidos;
+
+   - colores;
+
+   - símbolos definidos por el proyecto.
+
+
+
+2. Modificar expresiones visuales existentes.
+
+
+
+3. Interpretar acciones del usuario sobre la superficie de edición.
+
+
+
+4. Crear entidades en el Dominio Compartido.
+
+
+
+5. Modificar entidades en el Dominio Compartido.
+
+
+
+6. Eliminar entidades del Dominio Compartido.
+
+
+
+7. Establecer o actualizar atributos estructurales de dichas entidades.
+
+
+
+8. Establecer o actualizar atributos visuales como datos:
+
+   - posición;
+
+   - color;
+
+   - forma;
+
+   - tamaño;
+
+   - radio;
+
+   - alias;
+
+   - metadatos necesarios para que otro componente pueda representar visualmente la expresión.
+
+
+
+9. Coordinar el paso entre modo edición y modo ejecución, cuando corresponda.
+
+
+
+10. Generar una estructura compatible con el Motor existente.
+
+
+
+El Editor puede manejar datos visuales, pero no debe realizar renderización de bajo nivel.
+
+
+
+---
+
+
+
+## 2. Restricciones del Editor
+
+
+
+El Editor NO debe:
+
+
+
+- implementar la lógica central del cálculo matricial de propagaciones;
+
+- calcular valores finales;
+
+- estabilizar el sistema;
+
+- generar acciones de simulación;
+
+- interpretar semánticamente el resultado final de ejecución;
+
+- dibujar directamente en canvas, SVG, D3 u otra tecnología de renderizado;
+
+- implementar animaciones;
+
+- asumir responsabilidades del Visualizador;
+
+- asumir responsabilidades del Simulador;
+
+- modificar la lógica interna del Motor;
+
+- duplicar tablas de verdad de Belnap;
+
+- duplicar matrices de conectivos;
+
+- importar directamente funciones internas del Motor como `run()` desde una interfaz externa;
+
+- crear un contrato incompatible con los modelos reales del Motor.
+
+
+
+La frontera correcta es:
+
+
+
+Editor:
+
+- interpreta acciones del usuario;
+
+- modifica entidades del dominio;
+
+- actualiza atributos visuales como datos;
+
+- coordina modo edición/modo ejecución;
+
+- genera estructura compatible con el Motor.
+
+
+
+Visualizador:
+
+- dibuja en pantalla;
+
+- renderiza canvas/SVG/D3;
+
+- representa gráficamente datos y eventos.
+
+
+
+Motor:
+
+- calcula propagaciones;
+
+- estabiliza valores;
+
+- genera acciones.
+
+
+
+Simulador:
+
+- interpreta resultado estabilizado;
+
+- genera instrucciones de ejecución visual.
+
+
+
+---
+
+
+
+## 3. Contexto del Motor existente
+
+
+
+El Motor ya implementado se encuentra en:
+
+
+
+Super-Equipo-DSD/epic_motor/
+
+
+
+Su estructura conocida es:
+
+
+
+epic_motor/
+
+  api/
+
+    app.py
+
+  engine/
+
+    propagation.py
+
+  logic/
+
+    belnap.py
+
+    connectives.py
+
+  models/
+
+    schemas.py
+
+  tests/
+
+    test_motor.py
+
+  requirements.txt
+
+
+
+El Motor usa:
+
+
+
+- FastAPI
+
+- Uvicorn
+
+- Pydantic v2
+
+- Pytest
+
+- HTTPX
+
+
+
+El Motor se expone como API REST.
+
+
+
+Endpoints confirmados:
+
+
+
+1. GET /health
+
+- Verifica que el Motor esté activo.
+
+
+
+2. GET /conectivos
+
+- Devuelve los conectivos disponibles.
+
+
+
+3. POST /calcular
+
+- Ejecuta la propagación completa.
+
+- Recibe un MotorInput.
+
+- Devuelve un MotorOutput.
+
+
+
+El Motor corre por defecto en:
+
+
+
+http://localhost:8000
+
+
+
+Tiene CORS habilitado para:
+
+
+
+http://localhost:3000
+
+http://127.0.0.1:3000
+
+
+
+El Editor debe tratar al Motor como un servicio externo mediante HTTP si necesita ejecutar el cálculo.
+
+
+
+La lógica de edición no debe depender directamente del cliente HTTP. Si se implementa comunicación con el Motor, debe estar separada en un servicio, cliente o adaptador.
+
+
+
+---
+
+
+
+## 4. Dominio Compartido y compatibilidad con el Motor
+
+
+
+El documento de arquitectura establece que el Dominio Compartido actúa como fuente estructural común del sistema.
+
+
+
+En el proyecto real, el Motor ya tiene un contrato definido en:
+
+
+
+Super-Equipo-DSD/epic_motor/models/schemas.py
+
+
+
+Por lo tanto, el Editor debe poder traducir sus modificaciones del Dominio Compartido a un payload compatible con el Motor.
+
+
+
+La relación recomendada es:
+
+
+
+Acciones del usuario
+
+→ Editor
+
+→ Dominio Compartido / Estado estructural del Editor
+
+→ Adaptador estructural
+
+→ MotorInput compatible con schemas.py
+
+→ POST /calcular
+
+
+
+El Editor debe modificar el dominio, pero para integrarse con el Motor debe poder exportar:
+
+
+
+{
+
+  "elementos": [],
+
+  "conjuntos": [],
+
+  "max_iteraciones": 100
+
+}
+
+
+
+---
+
+
+
+## 5. Contrato real confirmado del Motor
+
+
+
+El Editor debe generar un payload compatible con:
+
+
+
+MotorInput:
+
+- elementos: List[ElementoIn]
+
+- conjuntos: List[ConjuntoIn]
+
+- max_iteraciones: int, entre 1 y 500, por defecto 100
+
+
+
+Estructura general:
+
+
+
+{
+
+  "elementos": [],
+
+  "conjuntos": [],
+
+  "max_iteraciones": 100
+
+}
+
+
+
+---
+
+
+
+## 6. ElementoIn
+
+
+
+Cada círculo, proposición, nodo o elemento lógico creado por el Editor debe poder mapearse a un ElementoIn.
+
+
+
+Estructura:
+
+
+
+ElementoIn:
+
+- id: string
+
+- valor_verdad: string
+
+- pertenencia: lista de strings
+
+- proviene: lista de strings
+
+- atributos_visuales:
+
+  - posicion:
+
+    - x: number
+
+    - y: number
+
+  - color: string o null
+
+
+
+Ejemplo:
+
+
+
+{
+
+  "id": "e1",
+
+  "valor_verdad": "V",
+
+  "pertenencia": ["C1"],
+
+  "proviene": [],
+
+  "atributos_visuales": {
+
+    "posicion": {
+
+      "x": 120,
+
+      "y": 200
+
+    },
+
+    "color": null
+
+  }
+
+}
+
+
+
+Reglas:
+
+
+
+- `id` debe ser único.
+
+- `valor_verdad` debe ser uno de: "V", "F", "N", "B".
+
+- `pertenencia` contiene los IDs de los conjuntos a los que pertenece el elemento.
+
+- `proviene` puede usarse para trazabilidad si el elemento deriva de otros.
+
+- `atributos_visuales` contiene metadatos que otro componente puede usar para dibujar.
+
+- El Editor puede actualizar `atributos_visuales`, pero no debe renderizarlos directamente.
+
+
+
+---
+
+
+
+## 7. ConjuntoIn
+
+
+
+Cada agrupación, conjunto, relación estructural, contexto de propagación o entidad compuesta creada por el Editor debe poder mapearse a un ConjuntoIn.
+
+
+
+Estructura:
+
+
+
+ConjuntoIn:
+
+- id: string
+
+- subconjuntos: lista de strings
+
+- es_resultado_de: string o null
+
+- conectivo: string
+
+- atributos_visuales:
+
+  - radio: number
+
+  - forma: string
+
+  - posicion:
+
+    - x: number
+
+    - y: number
+
+
+
+Ejemplo:
+
+
+
+{
+
+  "id": "C1",
+
+  "subconjuntos": [],
+
+  "es_resultado_de": null,
+
+  "conectivo": "PROPAGATION",
+
+  "atributos_visuales": {
+
+    "radio": 50,
+
+    "forma": "elipse",
+
+    "posicion": {
+
+      "x": 200,
+
+      "y": 200
+
+    }
+
+  }
+
+}
+
+
+
+Reglas:
+
+
+
+- `id` debe ser único.
+
+- `subconjuntos` debe contener IDs existentes de otros conjuntos.
+
+- `es_resultado_de` se usa para representar cambio de variable, alias o renombramiento lógico.
+
+- `conectivo` debe ser un conectivo válido reconocido por el Motor.
+
+- `atributos_visuales` solo almacena metadatos visuales; no implica renderizado directo.
+
+
+
+---
+
+
+
+## 8. Valores lógicos válidos
+
+
+
+El Motor usa lógica de Belnap de cuatro valores, definida en:
+
+
+
+Super-Equipo-DSD/epic_motor/logic/belnap.py
+
+
+
+Valores válidos:
+
+
+
+- "V": Verdad / evidencia positiva.
+
+- "F": Falsedad / evidencia negativa.
+
+- "N": Ninguna evidencia.
+
+- "B": Ambas evidencias / contradicción.
+
+
+
+Mapeo recomendado para el Editor:
+
+
+
+- sin evidencia → "N"
+
+- evidencia verde o positiva → "V"
+
+- evidencia roja o negativa → "F"
+
+- evidencia positiva y negativa simultánea → "B"
+
+
+
+Aunque el Motor puede normalizar valores como true, false, none o both, el Editor debe enviar siempre los valores canónicos:
+
+
+
+"V", "F", "N", "B"
+
+
+
+El Editor NO debe implementar las operaciones lógicas internas:
+
+- bv_and
+
+- bv_or
+
+- bv_not
+
+- bv_kjoin
+
+
+
+Eso pertenece al Motor.
+
+
+
+---
+
+
+
+## 9. Conectivos válidos
+
+
+
+Los conectivos reales del Motor están definidos en:
+
+
+
+Super-Equipo-DSD/epic_motor/logic/connectives.py
+
+
+
+Conectivos disponibles:
+
+
+
+- AND
+
+- OR
+
+- IMPLIES
+
+- BICONDITIONAL
+
+- PROPAGATION
+
+- CONTRAPOSITIONAL
+
+- KJOIN
+
+
+
+Reglas:
+
+
+
+- El Editor debe usar estos valores como opciones válidas para `ConjuntoIn.conectivo`.
+
+- El conectivo por defecto debe ser "PROPAGATION".
+
+- El Editor debe consultar preferentemente `GET /conectivos` para cargar los conectivos disponibles.
+
+- Si el endpoint no está disponible, puede usar como fallback temporal la lista anterior.
+
+- El Editor NO debe implementar matrices de conectivos.
+
+- El Editor NO debe aplicar conectivos.
+
+- El Editor NO debe calcular resultados lógicos.
+
+
+
+Si el usuario define una relación visual equivalente a una implicación, el Editor puede representarla usando:
+
+
+
+"IMPLIES"
+
+
+
+siempre que la estructura generada sea compatible con ElementoIn y ConjuntoIn.
+
+
+
+---
+
+
+
+## 10. Traducción de elementos visuales al contrato del Motor
+
+
+
+El documento de arquitectura indica que el Editor debe permitir crear y modificar expresiones visuales mediante círculos, arcos dirigidos, colores y símbolos definidos por el alcance del proyecto.
+
+
+
+Para mantener compatibilidad con el Motor existente, el Editor debe traducir esas expresiones visuales al contrato real basado en ElementoIn y ConjuntoIn.
+
+
+
+### Círculos
+
+
+
+Cada círculo, nodo o proposición visual debe poder mapearse a un ElementoIn.
+
+
+
+Reglas:
+
+
+
+- Debe tener un id único.
+
+- Debe tener un valor_verdad: "V", "F", "N" o "B".
+
+- Debe tener pertenencia a cero, uno o varios conjuntos.
+
+- Debe tener atributos_visuales como posición y color.
+
+- El Editor puede modificar esos atributos como datos, pero no debe renderizarlos directamente.
+
+
+
+### Colores
+
+
+
+Los colores pueden tener dos significados:
+
+
+
+1. Color como atributo visual:
+
+   - se guarda en atributos_visuales.color;
+
+   - no necesariamente modifica valor_verdad.
+
+
+
+2. Color como evidencia lógica:
+
+   - verde/evidencia positiva → valor_verdad "V";
+
+   - rojo/evidencia negativa → valor_verdad "F";
+
+   - sin evidencia → valor_verdad "N";
+
+   - evidencia positiva y negativa → valor_verdad "B".
+
+
+
+El Editor debe distinguir entre color visual y color lógico/evidencial.
+
+
+
+### Símbolos
+
+
+
+Los símbolos definidos por el proyecto deben mapearse a campos compatibles:
+
+
+
+- V, F, N, B → valor_verdad;
+
+- conectivos → ConjuntoIn.conectivo;
+
+- alias o cambio de variable → ConjuntoIn.es_resultado_de;
+
+- agrupaciones visuales → ConjuntoIn;
+
+- círculos → ElementoIn.
+
+
+
+Si un símbolo no tiene representación directa en el contrato del Motor, debe conservarse como metadato interno del Editor o proponerse como extensión justificada, sin romper MotorInput.
+
+
+
+---
+
+
+
+## 11. Manejo de arcos dirigidos
+
+
+
+El documento de arquitectura indica que el Editor debe permitir construir expresiones visuales mediante arcos dirigidos.
+
+
+
+Sin embargo, el Motor existente no recibe arcos como entidad directa en `MotorInput`. El contrato real del Motor se basa en:
+
+
+
+- ElementoIn[];
+
+- ConjuntoIn[];
+
+- pertenencia;
+
+- subconjuntos;
+
+- conectivo;
+
+- es_resultado_de.
+
+
+
+Por lo tanto, el manejo de arcos dirigidos debe diseñarse de forma desacoplada y adaptable.
+
+
+
+Regla principal:
+
+
+
+Los arcos dirigidos pueden existir como parte del modelo interno del Editor o del Dominio Compartido, siempre que no se envíen directamente al Motor si el contrato `schemas.py` no los acepta.
+
+
+
+Si se implementan arcos dirigidos internamente, cada arco debe servir para representar una intención estructural, por ejemplo:
+
+
+
+- relación entre dos elementos;
+
+- implicación entre proposiciones;
+
+- conexión lógica entre entidades;
+
+- dirección de una dependencia visual;
+
+- trazabilidad de origen y destino.
+
+
+
+Ejemplo de arco interno posible:
+
+
+
+{
+
+  "id": "a1",
+
+  "origen": "p",
+
+  "destino": "q",
+
+  "conectivo": "IMPLIES",
+
+  "atributos_visuales": {
+
+    "color": "#333333"
+
+  }
+
+}
+
+
+
+Pero antes de ejecutar el Motor, el Editor debe traducir esa estructura interna a un `MotorInput` válido.
+
+
+
+Ejemplo conceptual:
+
+
+
+arco p → q
+
+→ relación interna del Editor
+
+→ conjunto asociado a la relación
+
+→ conectivo "IMPLIES"
+
+→ pertenencia de los elementos involucrados
+
+→ MotorInput compatible
+
+
+
+La IA debe justificar la estrategia de traducción elegida.
+
+
+
+No inventes campos nuevos dentro de `MotorInput` como `arcos`, `edges` o `connections`, a menos que los mantengas exclusivamente como parte del estado interno del Editor y no como entrada directa al Motor.
+
+
+
+Si el equipo decide después no manejar arcos como entidad interna, esta parte puede reemplazarse por una estrategia basada únicamente en conjuntos, pertenencias y conectivos.
+
+
+
+La implementación debe quedar abierta a cambios futuros, aplicando OCP:
+
+
+
+- debe ser posible agregar, cambiar o eliminar el modelo interno de arcos sin reescribir todo el Editor;
+
+- la conversión al Motor debe estar aislada en un adaptador;
+
+- la lógica de edición no debe estar acoplada directamente al formato final del Motor.
+
+
+
+Cualquier representación interna adicional del Editor, como arcos dirigidos, herramientas de edición o metadatos visuales, debe mantenerse aislada del contrato final del Motor mediante adaptadores. Esto permitirá modificar o eliminar dichas representaciones después sin afectar la compatibilidad con el Motor.
+
+
+
+---
+
+
+
+## 12. Interpretación real del Motor
+
+
+
+El archivo:
+
+
+
+Super-Equipo-DSD/epic_motor/engine/propagation.py
+
+
+
+confirma que el Motor trabaja con:
+
+
+
+- elementos;
+
+- conjuntos;
+
+- pertenencia de elementos a conjuntos;
+
+- subconjuntos;
+
+- conectivos asociados a conjuntos;
+
+- valor_verdad;
+
+- es_resultado_de;
+
+- acciones generadas por el Motor.
+
+
+
+Por lo tanto, el Editor debe traducir la construcción lógica del usuario a:
+
+
+
+- ElementoIn[]
+
+- ConjuntoIn[]
+
+- max_iteraciones
+
+
+
+El Motor no calcula a partir de flechas visuales aisladas, sino a partir de elementos, conjuntos, pertenencias, subconjuntos y conectivos.
+
+
+
+Si el Editor maneja internamente una acción como “crear arco dirigido”, “crear relación” o “crear flecha”, debe traducirla a la estructura real del Motor.
+
+
+
+Ejemplo conceptual:
+
+
+
+crear arco dirigido o relación visual
+
+→ interpretar relación en el Editor
+
+→ actualizar pertenencia, conjunto o conectivo correspondiente
+
+→ generar MotorInput válido
+
+
+
+---
+
+
+
+## 13. Casos reales confirmados por test_motor.py
+
+
+
+El archivo:
+
+
+
+Super-Equipo-DSD/epic_motor/tests/test_motor.py
+
+
+
+confirma casos válidos que el Editor debe poder generar.
+
+
+
+### Caso 1: elemento único
+
+
+
+Un elemento con valor "V" dentro de un conjunto "C1":
+
+
+
+{
+
+  "elementos": [
+
+    {
+
+      "id": "e1",
+
+      "valor_verdad": "V",
+
+      "pertenencia": ["C1"],
+
+      "proviene": [],
+
+      "atributos_visuales": {
+
+        "posicion": { "x": 120, "y": 200 },
+
+        "color": null
+
+      }
+
+    }
+
+  ],
+
+  "conjuntos": [
+
+    {
+
+      "id": "C1",
+
+      "subconjuntos": [],
+
+      "es_resultado_de": null,
+
+      "conectivo": "PROPAGATION",
+
+      "atributos_visuales": {
+
+        "radio": 50,
+
+        "forma": "elipse",
+
+        "posicion": { "x": 120, "y": 200 }
+
+      }
+
+    }
+
+  ],
+
+  "max_iteraciones": 100
+
+}
+
+
+
+### Caso 2: propagación simple
+
+
+
+Dos elementos en el mismo conjunto con KJOIN:
+
+
+
+{
+
+  "elementos": [
+
+    {
+
+      "id": "e1",
+
+      "valor_verdad": "V",
+
+      "pertenencia": ["C1"],
+
+      "proviene": [],
+
+      "atributos_visuales": {
+
+        "posicion": { "x": 100, "y": 160 },
+
+        "color": null
+
+      }
+
+    },
+
+    {
+
+      "id": "e2",
+
+      "valor_verdad": "N",
+
+      "pertenencia": ["C1"],
+
+      "proviene": [],
+
+      "atributos_visuales": {
+
+        "posicion": { "x": 260, "y": 160 },
+
+        "color": null
+
+      }
+
+    }
+
+  ],
+
+  "conjuntos": [
+
+    {
+
+      "id": "C1",
+
+      "subconjuntos": [],
+
+      "es_resultado_de": null,
+
+      "conectivo": "KJOIN",
+
+      "atributos_visuales": {
+
+        "radio": 80,
+
+        "forma": "elipse",
+
+        "posicion": { "x": 180, "y": 160 }
+
+      }
+
+    }
+
+  ],
+
+  "max_iteraciones": 100
+
+}
+
+
+
+### Caso 3: contradicción
+
+
+
+Dos elementos en el mismo conjunto:
+
+
+
+- uno con "V";
+
+- otro con "F".
+
+
+
+Con KJOIN, el Motor puede producir "B".
+
+
+
+El Editor solo debe permitir construir el escenario.
+
+El Motor calcula la contradicción.
+
+
+
+### Caso 4: jerarquía de subconjuntos
+
+
+
+Un conjunto puede contener otro conjunto:
+
+
+
+{
+
+  "id": "C1",
+
+  "subconjuntos": ["C2"],
+
+  "conectivo": "KJOIN"
+
+}
+
+
+
+El Editor debe permitir representar o generar esta jerarquía mediante `subconjuntos`.
+
+
+
+### Caso 5: cambio de variable
+
+
+
+Si un conjunto tiene:
+
+
+
+{
+
+  "es_resultado_de": "Z"
+
+}
+
+
+
+el Motor genera una acción de tipo "cambio_nombre" cuyo destino es "Z".
+
+
+
+El Editor debe permitir definir `es_resultado_de` para representar un cambio de variable o alias lógico.
+
+
+
+El Editor no debe generar directamente la acción "cambio_nombre".
+
+Esa acción la genera el Motor.
+
+
+
+---
+
+
+
+## 14. Operaciones mínimas del Editor
+
+
+
+El Editor debe implementar o proponer una implementación para estas operaciones:
+
+
+
+1. Crear elemento.
+
+2. Modificar elemento.
+
+3. Eliminar elemento.
+
+4. Crear conjunto.
+
+5. Modificar conjunto.
+
+6. Eliminar conjunto.
+
+7. Crear o registrar una relación/arco dirigido como estructura interna del dominio, si el alcance lo requiere.
+
+8. Modificar o eliminar una relación/arco dirigido, si el modelo interno lo contempla.
+
+9. Asignar valor de verdad a un elemento:
+
+   - "V"
+
+   - "F"
+
+   - "N"
+
+   - "B"
+
+10. Asignar pertenencia de un elemento a uno o varios conjuntos.
+
+11. Quitar pertenencia de un elemento a un conjunto.
+
+12. Definir subconjuntos.
+
+13. Quitar subconjuntos.
+
+14. Asignar conectivo a un conjunto.
+
+15. Definir `es_resultado_de`.
+
+16. Actualizar atributos visuales como datos:
+
+   - posición
+
+   - color
+
+   - radio
+
+   - forma
+
+   - tamaño
+
+17. Validar el dominio antes de ejecución.
+
+18. Generar MotorInput.
+
+19. Coordinar el paso de modo edición a modo ejecución.
+
+20. Si corresponde, enviar MotorInput a `POST /calcular` mediante un servicio separado.
+
+
+
+---
+
+
+
+## 15. Validaciones mínimas del Editor
+
+
+
+El Editor debe validar:
+
+
+
+1. IDs únicos de elementos.
+
+2. IDs únicos de conjuntos.
+
+3. Valores de verdad permitidos.
+
+4. Conectivos permitidos.
+
+5. Pertenencias a conjuntos existentes.
+
+6. Subconjuntos existentes.
+
+7. Ausencia de ciclos en jerarquías de subconjuntos.
+
+8. Formato válido de `es_resultado_de`.
+
+9. `max_iteraciones` entre 1 y 500.
+
+10. Referencias rotas después de eliminar elementos o conjuntos.
+
+11. Si existen arcos internos, que origen y destino apunten a elementos existentes.
+
+12. Si existen arcos internos, que su conectivo sea válido.
+
+13. Si existen arcos internos, que su traducción a MotorInput no genere referencias inválidas.
+
+
+
+Los errores de validación deben ser estructurados y útiles para otros componentes.
+
+
+
+Ejemplo de error:
+
+
+
+{
+
+  "field": "elementos[0].pertenencia",
+
+  "message": "El conjunto C99 no existe",
+
+  "severity": "error",
+
+  "entityId": "e1"
+
+}
+
+
+
+---
+
+
+
+## 16. Reglas al eliminar entidades
+
+
+
+Si se elimina un elemento:
+
+
+
+- debe eliminarse del estado del Editor;
+
+- deben limpiarse referencias relacionadas, si existen;
+
+- si existen arcos internos, deben eliminarse o actualizarse los arcos donde ese elemento sea origen o destino;
+
+- no debe quedar un MotorInput con referencias rotas.
+
+
+
+Si se elimina un conjunto:
+
+
+
+- debe eliminarse de la lista de conjuntos;
+
+- debe quitarse de `pertenencia` en todos los elementos;
+
+- debe quitarse de `subconjuntos` en otros conjuntos;
+
+- debe revisarse si afectaba `es_resultado_de` o relaciones internas.
+
+
+
+---
+
+
+
+## 17. Diseño esperado del módulo Editor
+
+
+
+Diseña el Editor como un módulo desacoplado.
+
+
+
+Debe tener una separación similar a esta, ajustándola al lenguaje y estructura real del proyecto:
+
+
+
+editor/
+
+  domain/
+
+    editorTypes
+
+    editorState
+
+    editorActions
+
+  services/
+
+    motorApiClient
+
+  adapters/
+
+    editorToMotorInput
+
+  validators/
+
+    editorValidation
+
+  controllers/
+
+    editorController
+
+  tests/
+
+    editorValidation.test
+
+    editorToMotorInput.test
+
+
+
+Si el proyecto usa TypeScript, define tipos equivalentes a:
+
+
+
+- BelnapValue
+
+- MotorConnective
+
+- ElementoIn
+
+- ElementoOut
+
+- ConjuntoIn
+
+- Accion
+
+- MotorInput
+
+- MotorOutput
+
+- EditorArc, solo si se decide manejar arcos internos
+
+
+
+Si el proyecto usa JavaScript, documenta claramente las estructuras con JSDoc o comentarios.
+
+
+
+Si el proyecto usa otra tecnología, conserva la misma separación conceptual.
+
+
+
+---
+
+
+
+## 18. Principios SOLID obligatorios
+
+
+
+Todo el diseño debe respetar SOLID.
+
+
+
+### SRP — Single Responsibility Principle
+
+
+
+Cada archivo, clase o función debe tener una responsabilidad clara.
+
+
+
+Ejemplos:
+
+
+
+- El adaptador solo transforma estado del Editor a MotorInput.
+
+- El validador solo valida estructuras.
+
+- El cliente API solo se comunica con FastAPI.
+
+- El controlador del Editor coordina acciones, pero no calcula propagaciones.
+
+- Si existen arcos internos, su traducción no debe mezclarse con la lógica de validación ni con el cliente API.
+
+
+
+### OCP — Open/Closed Principle
+
+
+
+El Editor debe permitir agregar nuevos tipos de elementos, nuevos conectivos, nuevas acciones de edición o cambiar la estrategia de arcos internos sin reescribir todo.
+
+
+
+### LSP — Liskov Substitution Principle
+
+
+
+Las abstracciones deben poder sustituirse sin romper el sistema.
+
+
+
+Ejemplo:
+
+
+
+- un cliente real de API puede sustituirse por un mock para pruebas;
+
+- una estrategia de traducción de arcos puede sustituirse por otra sin afectar el controlador principal.
+
+
+
+### ISP — Interface Segregation Principle
+
+
+
+No crees interfaces gigantes que mezclen edición, API, validación, visualización y cálculo.
+
+
+
+### DIP — Dependency Inversion Principle
+
+
+
+El Editor debe depender de abstracciones, no de implementaciones concretas.
+
+
+
+Ejemplo:
+
+
+
+- El controlador del Editor depende de una interfaz `MotorClient`.
+
+- La implementación concreta usa HTTP y FastAPI.
+
+- El adaptador de arcos, si existe, debe depender de una interfaz de traducción y no estar incrustado en todas las acciones del Editor.
+
+
+
+---
+
+
+
+## 19. Comentarios en el código
+
+
+
+Todo el código debe estar comentado de forma clara y útil.
+
+
+
+Los comentarios deben explicar:
+
+
+
+- responsabilidad del archivo;
+
+- responsabilidad de cada clase o función;
+
+- cómo se relaciona con el Dominio Compartido;
+
+- cómo se relaciona con el contrato del Motor;
+
+- por qué no se calcula nada dentro del Editor;
+
+- cómo se validan las estructuras;
+
+- cómo se evita acoplamiento con el Motor;
+
+- cómo se pueden cambiar después decisiones como el uso de arcos internos;
+
+- cómo se puede extender después.
+
+
+
+No uses comentarios obvios como:
+
+
+
+- "declara variable";
+
+- "retorna dato";
+
+- "incrementa contador".
+
+
+
+Los comentarios deben ayudar a otro integrante del equipo a entender la arquitectura.
+
+
+
+---
+
+
+
+## 20. Estrategia de trabajo para cuatro personas
+
+
+
+Además de proponer el código del Editor, debes desarrollar una estrategia para repartir el trabajo entre cuatro integrantes.
+
+
+
+La estrategia debe permitir que los cuatro avancen en paralelo con la menor dependencia posible.
+
+
+
+### Persona 1 — Contratos, tipos y validaciones
+
+
+
+Responsabilidades:
+
+
+
+- Definir tipos del Editor compatibles con `schemas.py`.
+
+- Definir BelnapValue: "V" | "F" | "N" | "B".
+
+- Definir conectivos válidos.
+
+- Definir el modelo interno de arcos solo si se decide utilizarlo.
+
+- Crear validadores de:
+
+  - IDs únicos
+
+  - valores de verdad
+
+  - conectivos
+
+  - pertenencias
+
+  - subconjuntos
+
+  - ciclos
+
+  - referencias inexistentes
+
+  - arcos internos, si existen
+
+- Crear ejemplos de MotorInput válido.
+
+- Crear pruebas unitarias de validación.
+
+
+
+Entregables:
+
+
+
+- Tipos/interfaces.
+
+- Validadores.
+
+- Casos de prueba.
+
+- Documentación del contrato.
+
+
+
+### Persona 2 — Estado y acciones del Editor
+
+
+
+Responsabilidades:
+
+
+
+- Diseñar el estado interno del Editor.
+
+- Implementar acciones:
+
+  - crearElemento
+
+  - editarElemento
+
+  - eliminarElemento
+
+  - crearConjunto
+
+  - editarConjunto
+
+  - eliminarConjunto
+
+  - registrarArcoORelacion, si se decide manejar arcos internos
+
+  - eliminarArcoORelacion, si aplica
+
+  - asignarElementoAConjunto
+
+  - quitarElementoDeConjunto
+
+  - definirSubconjunto
+
+  - quitarSubconjunto
+
+  - asignarValorVerdad
+
+  - asignarConectivo
+
+  - definirResultadoDe
+
+  - actualizarAtributosVisuales
+
+- No implementar cálculo.
+
+- No implementar renderizado de bajo nivel.
+
+
+
+Entregables:
+
+
+
+- EditorState.
+
+- EditorActions.
+
+- EditorController o equivalente.
+
+- Pruebas de acciones del Editor.
+
+
+
+### Persona 3 — Adaptador Editor → MotorInput y cliente API
+
+
+
+Responsabilidades:
+
+
+
+- Crear adaptador que convierta el estado interno del Editor a MotorInput.
+
+- Crear estrategia de traducción de arcos internos a ElementoIn/ConjuntoIn, si se decide manejar arcos.
+
+- Mantener esa estrategia aislada para poder cambiarla después.
+
+- Crear cliente API para:
+
+  - GET /health
+
+  - GET /conectivos
+
+  - POST /calcular
+
+- Manejar errores 422 y 500.
+
+- No calcular nada del Motor.
+
+- No duplicar conectivos ni lógica de Belnap.
+
+- Crear mocks del cliente para pruebas.
+
+
+
+Entregables:
+
+
+
+- editorToMotorInput.
+
+- arcToMotorInputStrategy, solo si se decide manejar arcos internos.
+
+- MotorApiClient.
+
+- Manejo de errores.
+
+- Pruebas de integración con payloads de ejemplo.
+
+
+
+### Persona 4 — Integración, documentación y revisión SOLID
+
+
+
+Responsabilidades:
+
+
+
+- Integrar tipos, acciones, adaptador y cliente API.
+
+- Probar que el Editor genera payloads compatibles con el Motor.
+
+- Validar casos:
+
+  - elemento único
+
+  - dos elementos en mismo conjunto
+
+  - contradicción V/F
+
+  - subconjuntos
+
+  - es_resultado_de
+
+  - arcos internos traducidos correctamente, si existen
+
+- Revisar que no se haya metido lógica del Visualizador, Simulador o Motor.
+
+- Revisar cumplimiento SOLID.
+
+- Documentar flujo para el equipo.
+
+- Preparar checklist de integración.
+
+
+
+Entregables:
+
+
+
+- Pruebas de contrato.
+
+- Checklist de integración.
+
+- Documentación de uso del módulo Editor.
+
+- Reporte de cumplimiento SOLID.
+
+
+
+---
+
+
+
+## 21. Estrategia Git recomendada
+
+
+
+Propón una estrategia de ramas para evitar conflictos.
+
+
+
+Sugerencia:
+
+
+
+- main o develop: rama estable.
+
+- feature/editor-contracts
+
+- feature/editor-state-actions
+
+- feature/editor-motor-adapter-api
+
+- feature/editor-integration-tests
+
+
+
+Reglas:
+
+
+
+- No trabajar todos sobre el mismo archivo principal.
+
+- Definir primero contratos mínimos.
+
+- Usar Pull Requests pequeños.
+
+- Revisar que cada PR tenga pruebas.
+
+- No modificar archivos internos del Motor salvo justificación fuerte.
+
+- No subir archivos __pycache__ ni .pyc.
+
+
+
+---
+
+
+
+## 22. Pruebas mínimas esperadas del Editor
+
+
+
+Propón pruebas para validar que el Editor genera correctamente:
+
+
+
+1. MotorInput con un elemento.
+
+2. MotorInput con dos elementos en el mismo conjunto.
+
+3. MotorInput con valor "V".
+
+4. MotorInput con valor "F".
+
+5. MotorInput con valor "N".
+
+6. MotorInput con valor "B".
+
+7. MotorInput con conectivo "KJOIN".
+
+8. MotorInput con conectivo "IMPLIES".
+
+9. MotorInput con subconjuntos.
+
+10. MotorInput con `es_resultado_de`.
+
+11. Error cuando un elemento pertenece a un conjunto inexistente.
+
+12. Error cuando un conjunto referencia un subconjunto inexistente.
+
+13. Error cuando hay ciclo entre subconjuntos.
+
+14. Error cuando el conectivo no existe.
+
+15. Error cuando se repite un ID.
+
+16. Si existen arcos internos, error cuando el origen o destino no existe.
+
+17. Si existen arcos internos, prueba de traducción de arco p → q a MotorInput válido.
+
+18. Comunicación exitosa con GET /health.
+
+19. Comunicación exitosa con GET /conectivos.
+
+20. Comunicación exitosa con POST /calcular.
+
+
+
+---
+
+
+
+## 23. Forma de respuesta esperada
+
+
+
+Responde en este orden:
+
+
+
+1. Resumen ejecutivo.
+
+2. Qué entendiste de la responsabilidad del Editor según la arquitectura.
+
+3. Qué entendiste del Motor existente.
+
+4. Qué debe hacer exactamente el Editor.
+
+5. Qué NO debe hacer el Editor.
+
+6. Arquitectura propuesta del módulo Editor.
+
+7. Contratos/tipos necesarios.
+
+8. Decisión propuesta sobre manejo de arcos internos:
+
+   - si conviene implementarlos;
+
+   - si conviene dejarlos como extensión futura;
+
+   - cómo mantenerlos aislados si se implementan.
+
+9. Validaciones necesarias.
+
+10. Operaciones del Editor.
+
+11. Adaptador Editor → MotorInput.
+
+12. Cliente API para el Motor, si aplica.
+
+13. Estrategia de trabajo para cuatro personas.
+
+14. Archivos nuevos a crear.
+
+15. Archivos existentes a modificar, si aplica.
+
+16. Código completo de cada archivo necesario.
+
+17. Pruebas sugeridas o implementadas.
+
+18. Instrucciones para ejecutar y probar.
+
+19. Checklist final de integración.
+
+20. Explicación de cómo se cumplen los principios SOLID.
+
+
+
+Antes de escribir código, analiza los archivos proporcionados.
+
+
+
+Si falta información, dime exactamente qué archivo necesitas y por qué.
+
+
+
+Si hay contradicción entre documentación y código real, prioriza el código real del Motor:
+
+
+
+- schemas.py
+
+- app.py
+
+- propagation.py
+
+- belnap.py
+
+- connectives.py
+
+- test_motor.py
+
+
+
+pero conserva la arquitectura modular del proyecto.
+
+
+
+No inventes contratos incompatibles.
+
+No desarrolles componentes fuera del Editor.
+
+No implementes el renderizado de bajo nivel del Visualizador.
+
+No implementes el Simulador.
+
+No rehagas el Motor.
+
+
+
+Si una decisión puede cambiar después, como el uso de arcos internos, diseña esa parte de forma aislada, intercambiable y fácil de modificar.
+
+Este es e json a cambiara:
+
+{
+
+  "proyecto": "EPIC Playground PoC",
+
+  "version": "2.0",
+
+  "estado_sistema": "edicion",
+
+  "dominio_valores": ["V", "F", "N", "B"],
+
+  "dominio_compartido": {
+
+    "variables": [
+
+      {
+
+        "id": "p",
+
+        "valor_actual": "B",
+
+        "evidencias": ["verde", "roja"],
+
+        "alias": null
+
+      },
+
+      {
+
+        "id": "q",
+
+        "valor_actual": "N",
+
+        "evidencias": [],
+
+        "alias": null
+
+      },
+
+      {
+
+        "id": "r",
+
+        "valor_actual": "V",
+
+        "evidencias": ["verde"],
+
+        "alias": null
+
+      }
+
+    ],
+
+    "ocurrencias": [
+
+      {
+
+        "id": "occ_1",
+
+        "variable_id": "p",
+
+        "par_id": "par_1",
+
+        "atributos_visuales": {
+
+          "x": 100,
+
+          "y": 160
+
+        }
+
+      },
+
+      {
+
+        "id": "occ_2",
+
+        "variable_id": "q",
+
+        "par_id": "par_1",
+
+        "atributos_visuales": {
+
+          "x": 260,
+
+          "y": 160
+
+        }
+
+      },
+
+      {
+
+        "id": "occ_3",
+
+        "variable_id": "p",
+
+        "par_id": "par_2",
+
+        "atributos_visuales": {
+
+          "x": 100,
+
+          "y": 320
+
+        }
+
+      },
+
+      {
+
+        "id": "occ_4",
+
+        "variable_id": "r",
+
+        "par_id": "par_2",
+
+        "atributos_visuales": {
+
+          "x": 260,
+
+          "y": 320
+
+        }
+
+      }
+
+    ],
+
+    "pares": [
+
+      {
+
+        "id": "par_1",
+
+        "ocurrencias": ["occ_1", "occ_2"],
+
+        "atributos_visuales": {
+
+          "x": 180,
+
+          "y": 160
+
+        }
+
+      },
+
+      {
+
+        "id": "par_2",
+
+        "ocurrencias": ["occ_3", "occ_4"],
+
+        "atributos_visuales": {
+
+          "x": 180,
+
+          "y": 320
+
+        }
+
+      }
+
+    ],
+
+    "arcos": [
+
+      {
+
+        "id": "a1",
+
+        "origen_ocurrencia": "occ_1",
+
+        "destino_ocurrencia": "occ_2",
+
+        "origen_variable": "p",
+
+        "destino_variable": "q",
+
+        "conectivo": "IMPLIES"
+
+      },
+
+      {
+
+        "id": "a2",
+
+        "origen_ocurrencia": "occ_3",
+
+        "destino_ocurrencia": "occ_4",
+
+        "origen_variable": "p",
+
+        "destino_variable": "r",
+
+        "conectivo": "KJOIN"
+
+      }
+
+    ]
+
+  }
+
+}
+
+Dame el propmt para el claude haga su mejor trabajo, el .zip esta todas las partes del trabajo, solo se modificaria la parte del editor, ya que el otro equipo cambiaria el resto
+
+el .pdf es la arquitectura de referencia en la que se baso el prompt original 
+
+Segundo propmt para revalidar lo que nos pidio el profesor:
+Actúa como un Arquitecto de Software Senior y Especialista en Diseño de Contratos de Datos. Eres radicalmente honesto, crítico y priorizas la verdad técnica y el cumplimiento estricto de los principios SOLID.
+
+Contexto Actualizado del Proyecto:
+Estoy trabajando en la prueba de concepto "EPiC Playground PoC". Hubo un cambio de directivas por parte de la dirección del proyecto: El equipo del Editor (mi equipo) ahora dicta el contrato de datos. >
+El equipo del Motor de propagación matricial y el equipo del Simulador van a tener que refactorizar su código para consumir el JSON que nosotros generemos. Por lo tanto, el Editor es la Fuente de Verdad.
+
+El Problema:
+Necesito diseñar desde cero la estructura JSON (el Dominio Compartido) que escupirá el Editor. El diseño anterior que te mostraré a continuación es deficiente, mezcla conceptos y debe ser descartado o fuertemente refactorizado:
+
+JSON
+{
+  "proyecto": "EPIC Playground PoC",
+  "version": "2.0",
+  "estado_sistema": "edicion",
+  "dominio_valores": ["V", "F", "N", "B"],
+  "dominio_compartido": {
+    "variables": [...],
+    "ocurrencias": [...],
+    "pares": [...],
+    "arcos": [...]
+  }
+}
+Tus Tareas:
+
+Diseña el Estándar Definitivo: Crea una nueva estructura JSON desde cero. Debe ser un árbol o grafo impecable que separe claramente:
+
+Metadatos del lienzo: (versión, estado).
+
+Capa Lógica/Semántica: Variables, valores de lógica de Belnap ("V", "F", "N", "B"), relaciones lógicas, conectivos (AND, OR, IMPLIES, etc.).
+
+Capa Visual: Coordenadas (x, y), radios, colores, alias visuales. El Motor debe poder ignorar esta capa fácilmente, mientras que el Simulador la usará para animar.
+
+Tipado Estricto: Genera las interfaces/tipos (en TypeScript o el lenguaje que consideres óptimo para el tipado) de esta nueva estructura JSON.
+
+Defensa Arquitectónica: Explica paso a paso por qué esta nueva estructura es superior a la anterior, cómo previene ciclos infinitos de dependencias y cómo facilita el trabajo de los equipos del Motor y el Simulador. Identifica cualquier punto ciego en mi planteamiento.
+
+Restricciones Absolutas:
+
+El Editor captura UI y genera este JSON. No calcula nada.
+
+CERO COMENTARIOS EN EL CÓDIGO: Todo bloque de código que generes (JSON, TypeScript, etc.) debe venir estrictamente sin comentarios (ni //, ni /* */, ni #). Explica tu razonamiento en texto plano fuera de los bloques de código.
+
+Te adjuntaré un .zip con el estado actual del trabajo para que tengas el contexto general. Inicia analizando las fallas de diseño de la estructura ocurrencias/pares antigua y dame tu propuesta del nuevo JSON.

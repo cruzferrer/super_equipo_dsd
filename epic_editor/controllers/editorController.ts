@@ -1,3 +1,9 @@
+/*
+Creacion de todo el archivo editorController.ts utilizando Gemini, prompt utilizado:
+Con el anterior contexto de la conversacion y tomando en cuenta los cambios utilizados por el profesor,
+realiza primero el editorController.ts, siendo este el cerebro del sistema:
+coordina el estado, valida que no haya basura y se comunica con el Motor usando el nuevo estándar.
+*/
 import type {
   PlaygroundSnapshot,
   BelnapValue,

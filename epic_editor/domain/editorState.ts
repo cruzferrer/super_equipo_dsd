@@ -1,3 +1,10 @@
+/*
+Creacion de todo el archivo editorState.ts utilizando Gemini, prompt utilizado:
+Con el anterior contexto de la conversacion y tomando en cuenta los cambios utilizados por el profesor,
+realiza el editorState.ts, El estado del editor ya no será un diccionario plano.
+Será un envoltorio del PlaygroundSnapshot más los metadatos de la sesión (modo edición/ejecución).
+*/
+
 import type { PlaygroundSnapshot, MotorConnective } from "./editorTypes";
 
 export interface EditorState {

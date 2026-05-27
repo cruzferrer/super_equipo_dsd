@@ -1,3 +1,11 @@
+/*
+Creacion de todo el archivo editorValidations.ts utilizando Gemini, prompt utilizado:
+Con el anterior contexto de la conversacion y tomando en cuenta los cambios utilizados por el profesor,
+realiza el editorValidations.ts, Ahora que tenemos el PlaygroundSnapshot dividido en logic y visual,
+ la regla de oro del validador es una sola: Nada en la capa visual puede apuntar a un fantasma en la capa lógica. Si una instancia visual dice que representa a la variable "p"
+, y "p" no está en el inventario lógico, el snapshot es corrupto y no se envía al Motor.
+*/
+
 import type {
   PlaygroundSnapshot,
   ValidationResult,

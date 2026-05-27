@@ -1,3 +1,6 @@
+/*
+La creacion de los tests se codifico todo por nosotros.
+ */
 import { EditorController } from "../controllers/editorController";
 import { MockMotorClient } from "../services/motorApiClient";
 import { validarSnapshot } from "../validators/editorValidation";

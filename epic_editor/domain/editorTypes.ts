@@ -1,3 +1,10 @@
+/*
+Creacion de todo el archivo editorTypes.ts utilizando Gemini, prompt utilizado:
+Con el anterior contexto de la conversacion y tomando en cuenta los cambios utilizados por el profesor,
+realiza el editorTypes.ts, Vamos a borrar todo rastro de ElementoIn y ConjuntoIn. Vamos a definir el PlaygroundSnapshot, 
+dividiendo estrictamente logic (variables, sets, relations) y visual (instances, shapes).
+*/
+
 export type BelnapValue = "V" | "F" | "N" | "B";
 
 export type MotorConnective = string;

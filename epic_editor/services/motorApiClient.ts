@@ -1,3 +1,11 @@
+/*
+Creacion de todo el archivo motorApiClient.ts utilizando Gemini, prompt utilizado:
+Con el anterior contexto de la conversacion y tomando en cuenta los cambios utilizados por el profesor,
+realiza el motorApiClient.ts, Solo cambiaremos los tipos que entran y salen. 
+Enviaremos el PlaygroundSnapshot y recibiremos el PlaygroundSnapshot + execution_trace.
+le mandamos el PlaygroundSnapshot completo y exigimos que nos devuelva exactamente el mismo PlaygroundSnapshot, pero con el bloque execution_trace anexado.
+El Motor puede leer el JSON, ignorar la llave visual, procesar la llave logic, y adjuntar la respuesta. Nosotros recibimos eso y lo mandamos directo al estado global.
+*/
 import type {
   PlaygroundSnapshot,
   MotorConnective,

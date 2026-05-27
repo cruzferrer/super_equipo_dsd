@@ -1,3 +1,9 @@
+/*
+Creacion de todo el archivo editorActions.ts utilizando Gemini, prompt utilizado:
+Con el anterior contexto de la conversacion y tomando en cuenta los cambios utilizados por el profesor,
+realiza el editorActions.ts, Las acciones ahora deben operar en dos capas. Si borras un círculo visual, solo se borra 
+de la capa visual. La variable en la capa logic sigue existiendo (quizás en el inventario) hasta que el usuario decida purgarla.
+*/
 import type { EditorState } from "./editorState";
 import type {
   BelnapValue,
