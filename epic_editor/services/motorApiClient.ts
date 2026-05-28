@@ -68,12 +68,53 @@ export class MotorApiClient implements IMotorClient {
   }
 
   async calcular(snapshot: PlaygroundSnapshot): Promise<PlaygroundSnapshot> {
+    // 1. Map to Motor Python API format (dictionaries instead of arrays)
+    const motorVariables: Record<string, any> = {};
+    snapshot.logic.variables.forEach(v => {
+      motorVariables[v.id] = {
+        id: v.id,
+        value: v.truth_value || "N"
+      };
+    });
+
+    const motorSets: Record<string, any> = {};
+    snapshot.logic.sets.forEach(s => {
+      motorSets[s.id] = {
+        id: s.id,
+        elements: [] // not used by python engine but validated
+      };
+    });
+
+    const motorRelations: Record<string, any> = {};
+    snapshot.logic.relations.forEach(r => {
+      motorRelations[r.id] = {
+        id: r.id,
+        source: r.from_variable,
+        target: r.to_variable,
+        connective: r.connective || "PROPAGATION",
+        is_contrapositive: r.connective === "CONTRAPOSITIONAL"
+      };
+    });
+
+    const motorPayload = {
+      meta: {
+        max_iterations: snapshot.meta.max_iterations || 100,
+        version: "1.1"
+      },
+      logic: {
+        variables: motorVariables,
+        sets: motorSets,
+        relations: motorRelations
+      },
+      visual: snapshot.visual || {}
+    };
+
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/calcular`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(snapshot),
+        body: JSON.stringify(motorPayload),
       });
     } catch (e) {
       throw new MotorApiError(0, "No se pudo conectar con el Motor.", e);
@@ -105,7 +146,55 @@ export class MotorApiClient implements IMotorClient {
       );
     }
 
-    return body as PlaygroundSnapshot;
+    // 2. Map back from Motor Python API format to TypeScript format
+    const motorRes = body as any;
+    
+    // Reconstruct variables array
+    const variables = snapshot.logic.variables.map(v => {
+      const motorVar = motorRes.logic?.variables?.[v.id];
+      return {
+        ...v,
+        truth_value: motorVar ? motorVar.value : v.truth_value
+      };
+    });
+
+    // Reconstruct sets array
+    const sets = snapshot.logic.sets;
+
+    // Reconstruct relations array
+    const relations = snapshot.logic.relations;
+
+    // Reconstruct execution trace
+    const motorTrace = motorRes.execution_trace || { actions: [], stabilized: true, total_iterations: 0 };
+    const actions = (motorTrace.actions || []).map((act: any) => ({
+      step: act.step,
+      action_type: act.is_stabilized ? "stabilization" : "propagation",
+      target_id: act.variable_id || act.target_id,
+      result_value: act.new_value || act.result_value,
+      description: act.description
+    }));
+
+    const execution_trace = {
+      iterations: motorTrace.total_iterations ?? motorTrace.iterations ?? 0,
+      stabilized: motorTrace.stabilized ?? false,
+      actions: actions,
+      final_logic: {
+        variables: variables,
+        sets: sets,
+        relations: relations
+      }
+    };
+
+    return {
+      meta: snapshot.meta,
+      logic: {
+        variables,
+        sets,
+        relations
+      },
+      visual: snapshot.visual,
+      execution_trace
+    };
   }
 
   private async _tryParseBody(res: Response): Promise<any> {
