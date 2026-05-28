@@ -105,6 +105,40 @@ En la barra de herramientas superior tienes control absoluto de la simulación:
 
 ---
 
+## 📝 Guía de Integración para el Equipo de EDITOR
+
+> [!WARNING]
+> **El "Editor Interactivo" del Simulador es un Sandbox Temporal.**
+> Esta pestaña fue construida únicamente como una herramienta de depuración y pruebas E2E para el equipo de simulación. **No reemplaza el trabajo del equipo de Editor.** El desarrollo final de la interfaz de dibujo y el modelado del lienzo sigue siendo responsabilidad exclusiva del equipo de Editor.
+
+Para que el Editor definitivo funcione en armonía con nuestro Simulador, el equipo de Editor debe implementar los siguientes puntos de integración:
+
+### 1. Responsabilidades del Editor
+1. **Modelar el Grafo**: Proveer la interfaz para crear Conjuntos, Variables y Relaciones.
+2. **Generar Coordenadas Visuales**: Posicionar cada elemento en un espacio bidimensional ($x, y$), asignándoles un ID único de instancia visual en `visual.instances` y enlazándolo con su ID lógico en `logic.variables` (esto soporta que una variable tenga múltiples representaciones visuales).
+3. **Validar antes de Enviar**: Utilizar el validador de integridad referencial para evitar elementos fantasma antes del cálculo.
+
+### 2. Contrato de Comunicación y Flujo HTTP
+El Editor debe encargarse de la orquestación del cálculo contra el Motor. Los pasos técnicos son:
+
+1. **Construir el Snapshot inicial**: Empaquetar el lienzo en el formato JSON `PlaygroundSnapshot` definido en `domain/editorTypes.ts`.
+2. **Consumir el Motor**: Realizar una petición `POST` al endpoint `/calcular` de la API de Python (`http://localhost:8000/calcular`) enviando el JSON del Snapshot.
+3. **Capturar la Respuesta con la Traza**: El Motor responderá con el mismo Snapshot, habiendo inyectado el nodo `execution_trace`.
+4. **Enviar al Simulador**: Transferir el JSON final (con el trace completo) al simulador para que este reproduzca la animación visual.
+
+### 3. Métodos para pasar Datos al Simulador
+El Editor puede transferir el JSON al Simulador mediante dos vías principales:
+* **Vía Carga de Archivos (Desacoplado)**: El Editor ofrece un botón para "Exportar Snapshot JSON" y el usuario lo carga o arrastra en la zona de drop de la barra lateral del Simulador.
+* **Vía Importación de Módulo (Acoplado)**: Si se integran ambos proyectos en una misma SPA, el Editor puede importar y llamar directamente a la función global del simulador:
+  ```javascript
+  import { loadSnapshot } from './simulator.js';
+
+  // Al recibir el JSON del motor con el trace
+  loadSnapshot(finalSnapshotJSON);
+  ```
+
+---
+
 ## 📂 Estructura del Simulador (`epic_simulador/`)
 
 * **`index.html`**: Estructura principal y layout de pestañas de la aplicación.
