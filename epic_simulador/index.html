@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EPiC Playground - Simulador de Propagación Lógica</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Styling -->
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body class="dark-theme">
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <div class="pulse-logo"></div>
+        <h1>EPiC <span class="accent-text">Simulator</span></h1>
+      </div>
+      <p class="subtitle">Visualizador de Inferencia y Propagación Lógica (Belnap)</p>
+    </header>
+
+    <div class="main-layout">
+      <!-- Sidebar / Controls Panel -->
+      <aside class="sidebar">
+        <!-- Section 1: Load Snapshot -->
+        <section class="card load-section">
+          <div class="card-header">
+            <i data-lucide="file-json"></i>
+            <h2>Cargar Snapshot</h2>
+          </div>
+          <div class="card-body">
+            <div class="file-drop-zone" id="dropZone">
+              <i data-lucide="upload-cloud"></i>
+              <p>Arrastra tu JSON aquí o haz clic</p>
+              <input type="file" id="fileInput" accept=".json" style="display: none;">
+            </div>
+            <textarea id="jsonTextArea" placeholder="O pega el PlaygroundSnapshot JSON aquí..."></textarea>
+            <div class="btn-group">
+              <button class="btn btn-secondary" id="btnPaste">Validar y Cargar</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section 2: Preset Examples -->
+        <section class="card examples-section">
+          <div class="card-header">
+            <i data-lucide="lightbulb"></i>
+            <h2>Ejemplos Rápidos</h2>
+          </div>
+          <div class="card-body preset-grid">
+            <button class="btn-preset" data-preset="simple">
+              <span>Implicación Simple</span>
+              <small>p(V) &rarr; q(N)</small>
+            </button>
+            <button class="btn-preset" data-preset="contrapositive">
+              <span>Contrapositiva</span>
+              <small>Modus Tollens q(F)</small>
+            </button>
+            <button class="btn-preset" data-preset="contradiction">
+              <span>Contradicción</span>
+              <small>V y F &rarr; r(B)</small>
+            </button>
+            <button class="btn-preset" data-preset="loop">
+              <span>Ciclo Retroalimentado</span>
+              <small>Sistema Dinámico</small>
+            </button>
+          </div>
+        </section>
+
+        <!-- Section 3: Simulation Trace Log -->
+        <section class="card trace-section">
+          <div class="card-header">
+            <i data-lucide="list-ordered"></i>
+            <h2>Historial de Propagación</h2>
+          </div>
+          <div class="card-body flex-grow">
+            <div class="trace-info">
+              <div class="info-row">
+                <span>Estado:</span>
+                <span id="stabilizedBadge" class="badge badge-neutral">-</span>
+              </div>
+              <div class="info-row">
+                <span>Iteraciones:</span>
+                <span id="iterationCount">-</span>
+              </div>
+            </div>
+            <div class="trace-list" id="traceList">
+              <div class="trace-placeholder">Carga un snapshot para ver la traza.</div>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <!-- Main Visualizing Workspace -->
+      <main class="workspace">
+        <!-- Control Bar -->
+        <div class="control-bar card">
+          <div class="simulation-controls">
+            <button class="btn btn-icon" id="btnPrev" title="Paso Anterior">
+              <i data-lucide="skip-back"></i>
+            </button>
+            <button class="btn btn-primary btn-icon-text" id="btnPlay">
+              <i data-lucide="play" id="playIcon"></i>
+              <span id="playText">Reproducir</span>
+            </button>
+            <button class="btn btn-icon" id="btnNext" title="Siguiente Paso">
+              <i data-lucide="skip-forward"></i>
+            </button>
+            <button class="btn btn-secondary btn-icon" id="btnReset" title="Reiniciar">
+              <i data-lucide="rotate-ccw"></i>
+            </button>
+          </div>
+
+          <div class="playback-speed">
+            <span>Velocidad:</span>
+            <input type="range" id="speedSlider" min="300" max="2500" value="800" step="100" title="Velocidad de reproducción (ms)">
+            <span id="speedValue">800ms</span>
+          </div>
+
+          <div class="step-indicator">
+            Paso: <span id="currentStep">0</span> / <span id="totalSteps">0</span>
+          </div>
+        </div>
+
+        <!-- Render Tabs -->
+        <div class="tabs-container">
+          <div class="tabs">
+            <button class="tab-btn active" data-tab="box-view">
+              <i data-lucide="grid"></i> Vista de Cajitas (Pares)
+            </button>
+            <button class="tab-btn" data-tab="global-view">
+              <i data-lucide="layout"></i> Vista Global (Lienzo)
+            </button>
+            <button class="tab-btn" data-tab="editor-view" id="tabEditorBtn">
+              <i data-lucide="edit-3"></i> Editor Interactivo
+            </button>
+          </div>
+          
+          <div class="tab-content active" id="box-view">
+            <!-- Dynamically populated boxes will go here -->
+            <div class="boxes-grid" id="boxesGrid">
+              <div class="no-data-placeholder">
+                <i data-lucide="box" class="large-icon"></i>
+                <h3>No hay datos cargados</h3>
+                <p>Por favor carga un archivo JSON o selecciona un ejemplo del panel izquierdo para iniciar la simulación.</p>
+              </div>
+            </div>
+          </div>
+          
+          <div class="tab-content" id="global-view">
+            <div class="canvas-wrapper">
+              <div class="canvas-toolbar">
+                <button class="btn btn-secondary btn-icon" id="btnZoomIn" title="Acercar"><i data-lucide="zoom-in"></i></button>
+                <button class="btn btn-secondary btn-icon" id="btnZoomOut" title="Alejar"><i data-lucide="zoom-out"></i></button>
+                <button class="btn btn-secondary btn-icon" id="btnZoomReset" title="Ajustar Pantalla"><i data-lucide="maximize"></i></button>
+              </div>
+              <div class="global-canvas-container" id="globalCanvasContainer">
+                <!-- SVG Canvas will be generated here -->
+              </div>
+            </div>
+          </div>
+
+          <div class="tab-content" id="editor-view">
+            <div class="editor-workspace">
+              <!-- Left Form Panel -->
+              <div class="editor-forms">
+                <!-- Add Set Form -->
+                <div class="editor-form-card">
+                  <h3><i data-lucide="circle"></i> Crear Conjunto</h3>
+                  <div class="form-row">
+                    <input type="text" id="editSetName" placeholder="Ej. set_A">
+                    <select id="editSetConnective">
+                      <option value="PROPAGATION">PROPAGATION</option>
+                      <option value="CONTRAPOSITIONAL">CONTRAPOSITIONAL</option>
+                      <option value="AND">AND</option>
+                      <option value="OR">OR</option>
+                      <option value="IMPLIES">IMPLIES</option>
+                      <option value="BICONDITIONAL">BICONDITIONAL</option>
+                    </select>
+                    <button class="btn btn-primary" id="btnEditAddSet">Añadir</button>
+                  </div>
+                </div>
+
+                <!-- Add Variable Form -->
+                <div class="editor-form-card">
+                  <h3><i data-lucide="circle-dot"></i> Crear Variable</h3>
+                  <div class="form-row">
+                    <input type="text" id="editVarName" placeholder="Ej. p">
+                    <select id="editVarSet">
+                      <!-- Populated dynamically -->
+                      <option value="">Selecciona Conjunto...</option>
+                    </select>
+                    <select id="editVarVal">
+                      <option value="N">N (Neutro)</option>
+                      <option value="V">V (Verde/Positivo)</option>
+                      <option value="F">F (Rojo/Negativo)</option>
+                      <option value="B">B (Ambos)</option>
+                    </select>
+                    <button class="btn btn-primary" id="btnEditAddVar">Añadir</button>
+                  </div>
+                </div>
+
+                <!-- Add Relation Form -->
+                <div class="editor-form-card">
+                  <h3><i data-lucide="arrow-right"></i> Crear Relación (Implicación)</h3>
+                  <div class="form-row">
+                    <select id="editRelFrom">
+                      <!-- Populated dynamically -->
+                      <option value="">Origen...</option>
+                    </select>
+                    <span>&rarr;</span>
+                    <select id="editRelTo">
+                      <!-- Populated dynamically -->
+                      <option value="">Destino...</option>
+                    </select>
+                    <select id="editRelConnective">
+                      <option value="PROPAGATION">PROPAGATION</option>
+                      <option value="CONTRAPOSITIONAL">CONTRAPOSITIONAL</option>
+                      <option value="IMPLIES">IMPLIES</option>
+                    </select>
+                    <button class="btn btn-primary" id="btnEditAddRel">Conectar</button>
+                  </div>
+                </div>
+
+                <!-- Action Button -->
+                <button class="btn btn-primary btn-large" id="btnCalculateAPI">
+                  <i data-lucide="zap"></i> ⚡ Calcular con el Motor API
+                </button>
+                <div id="apiErrorLog" class="api-error-log" style="display: none;"></div>
+              </div>
+
+              <!-- Right Preview Panel -->
+              <div class="editor-preview card">
+                <div class="preview-header">
+                  <span>Lienzo del Editor (Previsualización en tiempo real)</span>
+                  <button class="btn btn-secondary btn-icon" id="btnResetEditor" title="Limpiar Todo"><i data-lucide="trash-2"></i></button>
+                </div>
+                <div class="editor-preview-container" id="editorPreviewContainer">
+                  <!-- Realtime preview SVG -->
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <!-- Editor Bridge: Integración del EditorController de TypeScript -->
+  <script type="module" src="./editor-bridge.js"></script>
+  <!-- Simulador Principal -->
+  <script type="module" src="./simulator.js"></script>
+</body>
+</html>
