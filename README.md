@@ -4,11 +4,13 @@
 
 ### 1️⃣ Iniciar el Motor API
 
-**Nueva terminal**
-```powershell
+
+```
 cd epic_motor
+pip install -r requirements.txt
 python -m uvicorn main:app --reload --port 8000
 ```
+
 
 ✅ El motor debe estar corriendo en `http://localhost:8000`
 
@@ -20,7 +22,7 @@ python -m uvicorn main:app --reload --port 8000
 
 ```powershell
 cd epic_simulador
-npm install (primera vez)
+npm install
 npm run build:editor
 ```
 
@@ -30,7 +32,7 @@ Esto genera los archivos en `epic_simulador/dist/`
 
 ### 3️⃣ Iniciar el Simulador
 
-```Nueva terminal
+```powershell
 cd epic_simulador
 npm run dev
 ```
