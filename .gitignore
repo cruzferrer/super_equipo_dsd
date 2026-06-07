@@ -1,4 +1,3 @@
-@"
 node_modules/
 __pycache__/
 *.pyc
@@ -7,4 +6,3 @@ build/
 coverage/
 .env
 .DS_Store
-"@ | Set-Content .gitignore
