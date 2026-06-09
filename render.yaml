@@ -11,9 +11,9 @@ services:
   # Frontend (Simulador Static Site)
   - type: web
     name: epic-simulador-frontend
-    env: static
+    runtime: static
     buildCommand: npm install && npm run build
-    publishDir: dist
+    staticPublishPath: dist
     rootDir: epic_simulador
     plan: free
     envVars:
